@@ -47,6 +47,7 @@ class EconomyBot(commands.Bot):
         await database.setup_db()
         self.add_view(RoomView())
         self.add_view(CustomRoomView())
+        self.add_view(InnControlView())
         self.add_view(RoomControlView())
         self.add_view(CustomRoomControlView())
         self.add_view(ChinchiroView())
@@ -346,19 +347,19 @@ async def handle_delete(interaction: discord.Interaction):
         await database.remove_room(interaction.channel_id)
 
 
-class RoomControlView(discord.ui.View):
+class InnControlView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="延長", style=discord.ButtonStyle.primary, emoji="⏱", custom_id="persistent_extend_btn")
+    @discord.ui.button(label="延長", style=discord.ButtonStyle.primary, emoji="⏱", custom_id="inn_extend_btn")
     async def extend_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await handle_extend(interaction)
 
-    @discord.ui.button(label="削除", style=discord.ButtonStyle.danger, emoji="🗑", custom_id="persistent_delete_btn")
+    @discord.ui.button(label="削除", style=discord.ButtonStyle.danger, emoji="🗑", custom_id="inn_delete_btn")
     async def delete_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await handle_delete(interaction)
 
-    @discord.ui.button(label="名前変更", style=discord.ButtonStyle.secondary, emoji="📝", custom_id="persistent_rename_btn", row=1)
+    @discord.ui.button(label="名前変更", style=discord.ButtonStyle.secondary, emoji="📝", custom_id="inn_rename_btn", row=1)
     async def rename_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         room_data = await database.get_room(interaction.channel_id)
         if room_data and interaction.user.id != room_data["owner_id"] and not interaction.user.guild_permissions.administrator:
@@ -366,13 +367,7 @@ class RoomControlView(discord.ui.View):
             return
         await interaction.response.send_modal(RenameModal())
 
-    @discord.ui.button(label="人数制限", style=discord.ButtonStyle.secondary, emoji="👥", custom_id="persistent_limit_btn", row=1)
-    async def limit_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        room_data = await database.get_room(interaction.channel_id)
-        if room_data and interaction.user.id != room_data["owner_id"] and not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("設定変更は作成者または管理者のみ可能です。", ephemeral=True)
-            return
-        await interaction.response.send_modal(LimitModal())
+class RoomControlView(discord.ui.View):
 
 
 # --- カスタムVC設定用モーダルとパネル ---
@@ -501,7 +496,8 @@ async def process_room_purchase(interaction: discord.Interaction, room_type: str
             overwrites[interaction.user].manage_permissions = True
 
         channel_name = f"{room_type}-{interaction.user.display_name}"
-        new_vc = await guild.create_voice_channel(name=channel_name, category=category, overwrites=overwrites)
+        user_limit = 2 if room_type == "宿" else 0
+        new_vc = await guild.create_voice_channel(name=channel_name, category=category, overwrites=overwrites, user_limit=user_limit)
 
         # データベースに登録
         expire_at = datetime.datetime.now() + datetime.timedelta(hours=duration)
@@ -510,8 +506,12 @@ async def process_room_purchase(interaction: discord.Interaction, room_type: str
         await reply(f"✅ **{price} {CURRENCY_NAME}** を支払い、{new_vc.mention} を作成しました！")
 
         # VC内にコントロールパネルを送信
-        # カスタムVCの場合は専用パネル、それ以外は通常パネル
-        view = CustomRoomControlView() if room_type == "カスタムVC" else RoomControlView()
+        if room_type == "カスタムVC":
+            view = CustomRoomControlView()
+        elif room_type == "高級宿":
+            view = RoomControlView()
+        else: # 普通の宿
+            view = InnControlView()
         embed = discord.Embed(
             title=f"🏠 {room_type}",
             description=f"{interaction.user.mention} がこの部屋を作成しました。\n**終了予定時刻:** <t:{int(expire_at.timestamp())}:F>\n\n時間になるか「削除」を押すとこのチャンネルは自動で消滅します。\n時間を延ばしたい場合は「延長」を押してください。",
