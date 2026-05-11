@@ -77,12 +77,12 @@ async def update_last_daily(user_id: int, timestamp: datetime.datetime):
         await db.execute('UPDATE users SET last_daily = ? WHERE user_id = ?', (timestamp.isoformat(), user_id))
         await db.commit()
 
-async def reset_chinchiro_count(user_id: int, date_str: str):
+async def reset_gambling_count(user_id: int, date_str: str):
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute('UPDATE users SET chinchiro_count = 0, chinchiro_last_date = ? WHERE user_id = ?', (date_str, user_id))
         await db.commit()
 
-async def increment_chinchiro_count(user_id: int):
+async def increment_gambling_count(user_id: int):
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute('UPDATE users SET chinchiro_count = chinchiro_count + 1 WHERE user_id = ?', (user_id,))
         await db.commit()
