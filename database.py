@@ -1,7 +1,6 @@
 import asyncpg
 import datetime
 import os
-import sys
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -13,10 +12,8 @@ async def setup_db():
         return
 
     try:
-        print(f"DEBUG: データベースに接続を試みています... (URL: {DATABASE_URL[:15]}...)")
-        conn = await asyncpg.connect(DATABASE_URL)
-        print("✅ データベース接続成功！テーブルを確認します...")
-        
+        # statement_cache_size=0 を追加して pgbouncer エラーを回避
+        conn = await asyncpg.connect(DATABASE_URL, statement_cache_size=0)
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
@@ -38,14 +35,13 @@ async def setup_db():
                 expire_at TIMESTAMP
             )
         ''')
-        print("✅ テーブルの確認・作成が完了しました。")
         await conn.close()
     except Exception as e:
         print(f"❌ データベース設定中にエラーが発生しました: {e}")
         raise e
 
 async def get_user(user_id: int):
-    conn = await asyncpg.connect(DATABASE_URL)
+    conn = await asyncpg.connect(DATABASE_URL, statement_cache_size=0)
     try:
         row = await conn.fetchrow('SELECT balance, last_daily, chinchiro_count, chinchiro_last_date, tc_xp, tc_level, vc_xp, vc_level FROM users WHERE user_id = $1', user_id)
         if row:
@@ -53,7 +49,7 @@ async def get_user(user_id: int):
                 "balance": row['balance'], 
                 "last_daily": row['last_daily'].isoformat() if row['last_daily'] else None,
                 "chinchiro_count": row['chinchiro_count'],
-                "last_daily_date": row['chinchiro_last_date'], # 名前が混在していたので修正
+                "chinchiro_last_date": row['chinchiro_last_date'],
                 "tc_xp": row['tc_xp'],
                 "tc_level": row['tc_level'],
                 "vc_xp": row['vc_xp'],
@@ -71,7 +67,7 @@ async def get_balance(user_id: int) -> int:
 
 async def add_balance(user_id: int, amount: int):
     await get_user(user_id)
-    conn = await asyncpg.connect(DATABASE_URL)
+    conn = await asyncpg.connect(DATABASE_URL, statement_cache_size=0)
     try:
         await conn.execute('UPDATE users SET balance = balance + $1 WHERE user_id = $2', amount, user_id)
     finally:
@@ -82,7 +78,7 @@ async def remove_balance(user_id: int, amount: int) -> bool:
     if current_balance < amount:
         return False
         
-    conn = await asyncpg.connect(DATABASE_URL)
+    conn = await asyncpg.connect(DATABASE_URL, statement_cache_size=0)
     try:
         await conn.execute('UPDATE users SET balance = balance - $1 WHERE user_id = $2', amount, user_id)
     finally:
@@ -91,21 +87,21 @@ async def remove_balance(user_id: int, amount: int) -> bool:
 
 async def update_last_daily(user_id: int, timestamp: datetime.datetime):
     await get_user(user_id)
-    conn = await asyncpg.connect(DATABASE_URL)
+    conn = await asyncpg.connect(DATABASE_URL, statement_cache_size=0)
     try:
         await conn.execute('UPDATE users SET last_daily = $1 WHERE user_id = $2', timestamp, user_id)
     finally:
         await conn.close()
 
 async def reset_gambling_count(user_id: int, date_str: str):
-    conn = await asyncpg.connect(DATABASE_URL)
+    conn = await asyncpg.connect(DATABASE_URL, statement_cache_size=0)
     try:
         await conn.execute('UPDATE users SET chinchiro_count = 0, chinchiro_last_date = $1 WHERE user_id = $2', date_str, user_id)
     finally:
         await conn.close()
 
 async def increment_gambling_count(user_id: int):
-    conn = await asyncpg.connect(DATABASE_URL)
+    conn = await asyncpg.connect(DATABASE_URL, statement_cache_size=0)
     try:
         await conn.execute('UPDATE users SET chinchiro_count = chinchiro_count + 1 WHERE user_id = $2', user_id)
     finally:
@@ -119,7 +115,7 @@ async def add_xp(user_id: int, amount: int, mode: str):
     field_xp = "tc_xp" if mode == "tc" else "vc_xp"
     field_lv = "tc_level" if mode == "tc" else "vc_level"
     
-    conn = await asyncpg.connect(DATABASE_URL)
+    conn = await asyncpg.connect(DATABASE_URL, statement_cache_size=0)
     try:
         row = await conn.fetchrow(f'SELECT {field_xp}, {field_lv} FROM users WHERE user_id = $1', user_id)
         current_xp, current_lv = row[0], row[1]
@@ -140,7 +136,7 @@ async def add_xp(user_id: int, amount: int, mode: str):
         await conn.close()
 
 async def add_room(channel_id: int, owner_id: int, room_type: str, expire_at: datetime.datetime):
-    conn = await asyncpg.connect(DATABASE_URL)
+    conn = await asyncpg.connect(DATABASE_URL, statement_cache_size=0)
     try:
         await conn.execute('INSERT INTO rooms (channel_id, owner_id, room_type, expire_at) VALUES ($1, $2, $3, $4)', 
                          channel_id, owner_id, room_type, expire_at)
@@ -148,7 +144,7 @@ async def add_room(channel_id: int, owner_id: int, room_type: str, expire_at: da
         await conn.close()
 
 async def get_room(channel_id: int):
-    conn = await asyncpg.connect(DATABASE_URL)
+    conn = await asyncpg.connect(DATABASE_URL, statement_cache_size=0)
     try:
         row = await conn.fetchrow('SELECT owner_id, room_type, expire_at FROM rooms WHERE channel_id = $1', channel_id)
         if row:
@@ -158,7 +154,7 @@ async def get_room(channel_id: int):
         await conn.close()
 
 async def has_room_type(owner_id: int, room_types: list[str]) -> bool:
-    conn = await asyncpg.connect(DATABASE_URL)
+    conn = await asyncpg.connect(DATABASE_URL, statement_cache_size=0)
     try:
         row = await conn.fetchrow('SELECT 1 FROM rooms WHERE owner_id = $1 AND room_type = ANY($2) LIMIT 1', owner_id, room_types)
         return row is not None
@@ -166,14 +162,14 @@ async def has_room_type(owner_id: int, room_types: list[str]) -> bool:
         await conn.close()
 
 async def remove_room(channel_id: int):
-    conn = await asyncpg.connect(DATABASE_URL)
+    conn = await asyncpg.connect(DATABASE_URL, statement_cache_size=0)
     try:
         await conn.execute('DELETE FROM rooms WHERE channel_id = $1', channel_id)
     finally:
         await conn.close()
 
 async def extend_room(channel_id: int, new_expire_at: datetime.datetime):
-    conn = await asyncpg.connect(DATABASE_URL)
+    conn = await asyncpg.connect(DATABASE_URL, statement_cache_size=0)
     try:
         await conn.execute('UPDATE rooms SET expire_at = $1 WHERE channel_id = $2', new_expire_at, channel_id)
     finally:
@@ -181,7 +177,7 @@ async def extend_room(channel_id: int, new_expire_at: datetime.datetime):
 
 async def get_expired_rooms():
     now = datetime.datetime.now()
-    conn = await asyncpg.connect(DATABASE_URL)
+    conn = await asyncpg.connect(DATABASE_URL, statement_cache_size=0)
     try:
         rows = await conn.fetch('SELECT channel_id FROM rooms WHERE expire_at <= $1', now)
         return [row['channel_id'] for row in rows]
