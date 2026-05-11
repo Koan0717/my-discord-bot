@@ -12,7 +12,6 @@ async def setup_db():
         return
 
     try:
-        # statement_cache_size=0 を追加して pgbouncer エラーを回避
         conn = await asyncpg.connect(DATABASE_URL, statement_cache_size=0)
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS users (
@@ -103,7 +102,8 @@ async def reset_gambling_count(user_id: int, date_str: str):
 async def increment_gambling_count(user_id: int):
     conn = await asyncpg.connect(DATABASE_URL, statement_cache_size=0)
     try:
-        await conn.execute('UPDATE users SET chinchiro_count = chinchiro_count + 1 WHERE user_id = $2', user_id)
+        # $2 を $1 に修正（パラメータが1つだけなので）
+        await conn.execute('UPDATE users SET chinchiro_count = chinchiro_count + 1 WHERE user_id = $1', user_id)
     finally:
         await conn.close()
 
