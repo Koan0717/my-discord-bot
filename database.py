@@ -1,15 +1,22 @@
 import asyncpg
 import datetime
 import os
+import sys
 from dotenv import load_dotenv
 
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 async def setup_db():
-    conn = await asyncpg.connect(DATABASE_URL)
+    if not DATABASE_URL:
+        print("❌ エラー: DATABASE_URL が設定されていません。")
+        return
+
     try:
-        # PostgreSQLでは BIGINT を使用（DiscordのIDが大きいため）
+        print(f"DEBUG: データベースに接続を試みています... (URL: {DATABASE_URL[:15]}...)")
+        conn = await asyncpg.connect(DATABASE_URL)
+        print("✅ データベース接続成功！テーブルを確認します...")
+        
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
@@ -31,8 +38,11 @@ async def setup_db():
                 expire_at TIMESTAMP
             )
         ''')
-    finally:
+        print("✅ テーブルの確認・作成が完了しました。")
         await conn.close()
+    except Exception as e:
+        print(f"❌ データベース設定中にエラーが発生しました: {e}")
+        raise e
 
 async def get_user(user_id: int):
     conn = await asyncpg.connect(DATABASE_URL)
@@ -43,14 +53,13 @@ async def get_user(user_id: int):
                 "balance": row['balance'], 
                 "last_daily": row['last_daily'].isoformat() if row['last_daily'] else None,
                 "chinchiro_count": row['chinchiro_count'],
-                "chinchiro_last_date": row['chinchiro_last_date'],
+                "last_daily_date": row['chinchiro_last_date'], # 名前が混在していたので修正
                 "tc_xp": row['tc_xp'],
                 "tc_level": row['tc_level'],
                 "vc_xp": row['vc_xp'],
                 "vc_level": row['vc_level']
             }
         else:
-            # ユーザーが存在しない場合は初期化
             await conn.execute('INSERT INTO users (user_id, balance) VALUES ($1, 0) ON CONFLICT (user_id) DO NOTHING', user_id)
             return {"balance": 0, "last_daily": None, "chinchiro_count": 0, "chinchiro_last_date": None, "tc_xp": 0, "tc_level": 1, "vc_xp": 0, "vc_level": 1}
     finally:
@@ -61,7 +70,7 @@ async def get_balance(user_id: int) -> int:
     return user["balance"]
 
 async def add_balance(user_id: int, amount: int):
-    await get_user(user_id) # 存在確認
+    await get_user(user_id)
     conn = await asyncpg.connect(DATABASE_URL)
     try:
         await conn.execute('UPDATE users SET balance = balance + $1 WHERE user_id = $2', amount, user_id)
@@ -69,7 +78,6 @@ async def add_balance(user_id: int, amount: int):
         await conn.close()
 
 async def remove_balance(user_id: int, amount: int) -> bool:
-    """残高を減らす。残高不足の場合はFalseを返す"""
     current_balance = await get_balance(user_id)
     if current_balance < amount:
         return False
@@ -103,15 +111,11 @@ async def increment_gambling_count(user_id: int):
     finally:
         await conn.close()
 
-# --- Rank System ---
-
 def get_next_level_xp(level: int) -> int:
     return int(100 * (level ** 1.2) + 100)
 
 async def add_xp(user_id: int, amount: int, mode: str):
-    """XPを加算し、レベルアップした場合は新しいレベルを返す。それ以外はNone"""
-    await get_user(user_id) # ユーザー作成確認
-    
+    await get_user(user_id)
     field_xp = "tc_xp" if mode == "tc" else "vc_xp"
     field_lv = "tc_level" if mode == "tc" else "vc_level"
     
@@ -119,11 +123,9 @@ async def add_xp(user_id: int, amount: int, mode: str):
     try:
         row = await conn.fetchrow(f'SELECT {field_xp}, {field_lv} FROM users WHERE user_id = $1', user_id)
         current_xp, current_lv = row[0], row[1]
-            
         new_xp = current_xp + amount
         new_lv = current_lv
         leveled_up = False
-        
         while True:
             needed = get_next_level_xp(new_lv)
             if new_xp >= needed:
@@ -132,13 +134,11 @@ async def add_xp(user_id: int, amount: int, mode: str):
                 leveled_up = True
             else:
                 break
-        
         await conn.execute(f'UPDATE users SET {field_xp} = $1, {field_lv} = $2 WHERE user_id = $3', new_xp, new_lv, user_id)
         return new_lv if leveled_up else None
     finally:
         await conn.close()
 
-# --- Room Management ---
 async def add_room(channel_id: int, owner_id: int, room_type: str, expire_at: datetime.datetime):
     conn = await asyncpg.connect(DATABASE_URL)
     try:
@@ -160,7 +160,6 @@ async def get_room(channel_id: int):
 async def has_room_type(owner_id: int, room_types: list[str]) -> bool:
     conn = await asyncpg.connect(DATABASE_URL)
     try:
-        # PostgreSQLでのIN句の扱い
         row = await conn.fetchrow('SELECT 1 FROM rooms WHERE owner_id = $1 AND room_type = ANY($2) LIMIT 1', owner_id, room_types)
         return row is not None
     finally:
