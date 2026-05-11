@@ -9,7 +9,13 @@ async def setup_db():
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
                 balance INTEGER DEFAULT 0,
-                last_daily TIMESTAMP
+                last_daily TIMESTAMP,
+                chinchiro_count INTEGER DEFAULT 0,
+                chinchiro_last_date TEXT,
+                tc_xp INTEGER DEFAULT 0,
+                tc_level INTEGER DEFAULT 1,
+                vc_xp INTEGER DEFAULT 0,
+                vc_level INTEGER DEFAULT 1
             )
         ''')
         await db.execute('''
@@ -24,10 +30,19 @@ async def setup_db():
 
 async def get_user(user_id: int):
     async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute('SELECT balance, last_daily FROM users WHERE user_id = ?', (user_id,)) as cursor:
+        async with db.execute('SELECT balance, last_daily, chinchiro_count, chinchiro_last_date, tc_xp, tc_level, vc_xp, vc_level FROM users WHERE user_id = ?', (user_id,)) as cursor:
             row = await cursor.fetchone()
             if row:
-                return {"balance": row[0], "last_daily": row[1]}
+                return {
+                    "balance": row[0], 
+                    "last_daily": row[1],
+                    "chinchiro_count": row[2],
+                    "chinchiro_last_date": row[3],
+                    "tc_xp": row[4],
+                    "tc_level": row[5],
+                    "vc_xp": row[6],
+                    "vc_level": row[7]
+                }
             else:
                 # ユーザーが存在しない場合は初期化
                 await db.execute('INSERT INTO users (user_id, balance) VALUES (?, 0)', (user_id,))
@@ -61,6 +76,54 @@ async def update_last_daily(user_id: int, timestamp: datetime.datetime):
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute('UPDATE users SET last_daily = ? WHERE user_id = ?', (timestamp.isoformat(), user_id))
         await db.commit()
+
+async def reset_chinchiro_count(user_id: int, date_str: str):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute('UPDATE users SET chinchiro_count = 0, chinchiro_last_date = ? WHERE user_id = ?', (date_str, user_id))
+        await db.commit()
+
+async def increment_chinchiro_count(user_id: int):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute('UPDATE users SET chinchiro_count = chinchiro_count + 1 WHERE user_id = ?', (user_id,))
+        await db.commit()
+
+# --- Rank System ---
+
+def get_next_level_xp(level: int) -> int:
+    """次のレベルに必要な累計ではなく、そのレベル単体で必要なXPを返す"""
+    return int(100 * (level ** 1.2) + 100)
+
+async def add_xp(user_id: int, amount: int, mode: str):
+    """XPを加算し、レベルアップした場合は新しいレベルを返す。それ以外はNone"""
+    await get_user(user_id) # ユーザー作成確認
+    
+    field_xp = "tc_xp" if mode == "tc" else "vc_xp"
+    field_lv = "tc_level" if mode == "tc" else "vc_level"
+    
+    async with aiosqlite.connect(DB_NAME) as db:
+        # 現在のXPとレベルを取得
+        async with db.execute(f'SELECT {field_xp}, {field_lv} FROM users WHERE user_id = ?', (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            current_xp, current_lv = row
+            
+        new_xp = current_xp + amount
+        new_lv = current_lv
+        leveled_up = False
+        
+        # レベルアップ判定（複数レベル上がる可能性も考慮）
+        while True:
+            needed = get_next_level_xp(new_lv)
+            if new_xp >= needed:
+                new_xp -= needed
+                new_lv += 1
+                leveled_up = True
+            else:
+                break
+        
+        await db.execute(f'UPDATE users SET {field_xp} = ?, {field_lv} = ? WHERE user_id = ?', (new_xp, new_lv, user_id))
+        await db.commit()
+        
+        return new_lv if leveled_up else None
 
 # --- Room Management ---
 async def add_room(channel_id: int, owner_id: int, room_type: str, expire_at: datetime.datetime):
