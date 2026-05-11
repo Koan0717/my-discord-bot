@@ -368,6 +368,32 @@ class InnControlView(discord.ui.View):
         await interaction.response.send_modal(RenameModal())
 
 class RoomControlView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="延長", style=discord.ButtonStyle.primary, emoji="⏱", custom_id="persistent_extend_btn")
+    async def extend_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await handle_extend(interaction)
+
+    @discord.ui.button(label="削除", style=discord.ButtonStyle.danger, emoji="🗑", custom_id="persistent_delete_btn")
+    async def delete_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await handle_delete(interaction)
+
+    @discord.ui.button(label="名前変更", style=discord.ButtonStyle.secondary, emoji="📝", custom_id="persistent_rename_btn", row=1)
+    async def rename_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        room_data = await database.get_room(interaction.channel_id)
+        if room_data and interaction.user.id != room_data["owner_id"] and not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("設定変更は作成者または管理者のみ可能です。", ephemeral=True)
+            return
+        await interaction.response.send_modal(RenameModal())
+
+    @discord.ui.button(label="人数制限", style=discord.ButtonStyle.secondary, emoji="👥", custom_id="persistent_limit_btn", row=1)
+    async def limit_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        room_data = await database.get_room(interaction.channel_id)
+        if room_data and interaction.user.id != room_data["owner_id"] and not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("設定変更は作成者または管理者のみ可能です。", ephemeral=True)
+            return
+        await interaction.response.send_modal(LimitModal())
 
 
 # --- カスタムVC設定用モーダルとパネル ---
