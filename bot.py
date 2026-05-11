@@ -469,6 +469,27 @@ class CustomRoomControlView(discord.ui.View):
             return
         await interaction.response.send_modal(LimitModal())
 
+# --- 管理者専用コマンド ---
+@bot.tree.command(name="reset_user_rank", description="【管理者専用】指定したユーザーのランクレベルとXPをリセットします")
+@app_commands.checks.has_permissions(administrator=True)
+async def reset_user_rank_cmd(interaction: discord.Interaction, user: discord.Member):
+    await database.reset_user_rank(user.id)
+    await interaction.response.send_message(f"✅ {user.mention} のランクレベルとXPをリセットしました。", ephemeral=True)
+
+@bot.tree.command(name="reset_user_balance", description="【管理者専用】指定したユーザーの所持金を0にリセットします")
+@app_commands.checks.has_permissions(administrator=True)
+async def reset_user_balance_cmd(interaction: discord.Interaction, user: discord.Member):
+    await database.reset_user_balance(user.id)
+    await interaction.response.send_message(f"✅ {user.mention} の所持金を 0 にリセットしました。", ephemeral=True)
+
+@reset_user_rank_cmd.error
+@reset_user_balance_cmd.error
+async def admin_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message("❌ このコマンドを実行する権限がありません（管理者のみ可能です）。", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"❌ エラーが発生しました: {error}", ephemeral=True)
+
 # --- VC購入システム ---
 async def process_room_purchase(interaction: discord.Interaction, room_type: str, is_confirm_view: bool = False):
     # タイムアウト対策（少し時間がかかる処理の前に宣言）

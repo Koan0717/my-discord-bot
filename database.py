@@ -159,3 +159,18 @@ async def get_expired_rooms():
     async with p.acquire() as conn:
         rows = await conn.fetch('SELECT channel_id FROM rooms WHERE expire_at <= $1', now)
         return [row['channel_id'] for row in rows]
+
+# --- 管理用リセット関数 ---
+async def reset_user_rank(user_id: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('''
+            UPDATE users 
+            SET tc_xp = 0, tc_level = 1, vc_xp = 0, vc_level = 1 
+            WHERE user_id = $1
+        ''', user_id)
+
+async def reset_user_balance(user_id: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('UPDATE users SET balance = 0 WHERE user_id = $1', user_id)
