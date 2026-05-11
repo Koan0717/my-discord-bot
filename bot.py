@@ -21,6 +21,7 @@ DAILY_REWARD = 1000   # デイリーボーナスの獲得量
 # 経験値の設定
 TC_XP_REWARD = 10      # メッセージ1通あたりのXP
 VC_XP_PER_MIN = 15     # VC滞在1分あたりのXP
+LEVEL_UP_CHANNEL_ID = 1503480861105066024
 
 # 部屋作成の設定
 ROOM_SETTINGS = {
@@ -114,7 +115,9 @@ async def on_message(message):
         # TC経験値の加算
         new_lv = await database.add_xp(user_id, TC_XP_REWARD, "tc")
         if new_lv:
-            await message.channel.send(f"🎊 {message.author.mention} が **TCレベルアップ！** (Lv.{new_lv-1} ➔ **{new_lv}**)")
+            lv_channel = bot.get_channel(LEVEL_UP_CHANNEL_ID)
+            if lv_channel:
+                await lv_channel.send(f"🎊 {message.author.mention} が **TCレベルアップ！** (Lv.{new_lv-1} ➔ **{new_lv}**)")
     
     await bot.process_commands(message)
 
@@ -146,9 +149,9 @@ async def on_voice_state_update(member, before, after):
                 xp_reward = duration_minutes * VC_XP_PER_MIN
                 new_lv = await database.add_xp(user_id, xp_reward, "vc")
                 if new_lv:
-                    # ログまたは共通チャンネルに通知したい場合はここで。今回は本人へのメッセージ等は省略。
-                    # 必要であれば get_channel で特定のチャンネルに送る
-                    print(f"DEBUG: {member.display_name} leveled up VC to {new_lv}")
+                    lv_channel = bot.get_channel(LEVEL_UP_CHANNEL_ID)
+                    if lv_channel:
+                        await lv_channel.send(f"🎊 {member.mention} が **VCレベルアップ！** (Lv.{new_lv-1} ➔ **{new_lv}**)")
         
         # 退出した部屋が無人になった場合、それがカスタムVCならタイマーを開始
         if len(before.channel.members) == 0:
