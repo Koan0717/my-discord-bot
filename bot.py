@@ -576,7 +576,7 @@ class AdminGroup(app_commands.Group):
     @is_admin()
     async def s_inn(self, it): await it.channel.send(embed=discord.Embed(title="🏠 宿屋", description="部屋を借りる", color=discord.Color.gold()), view=RoomView()); await it.response.send_message("設置完了", ephemeral=True)
 
-    @app_commands.command(name="パネル設置_カスタムVC", description="カスタムVCパネルを送信")
+    @app_commands.command(name="パネル設置_カスタムvc", description="カスタムVCパネルを送信")
     @is_admin()
     async def s_cvc(self, it): await it.channel.send(embed=discord.Embed(title="✨ カスタムVC", description="自分だけの部屋を作成", color=discord.Color.purple()), view=CustomRoomView()); await it.response.send_message("設置完了", ephemeral=True)
 
