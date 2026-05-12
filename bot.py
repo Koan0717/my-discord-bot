@@ -183,6 +183,20 @@ async def on_voice_state_update(member, before, after):
         # --- 自動VC作成ロジック ---
         if after.channel.id == CREATE_VC_CHANNEL_ID:
             try:
+                # 既に一時部屋を持っているかチェック
+                async with database.pool.acquire() as conn:
+                    existing_room = await conn.fetchrow('SELECT channel_id FROM rooms WHERE owner_id = $1 AND room_type = $2', member.id, "一時部屋")
+                
+                if existing_room:
+                    # 既に部屋がある場合、その部屋に移動させる（存在確認含む）
+                    existing_channel = bot.get_channel(existing_room["channel_id"])
+                    if existing_channel:
+                        await member.move_to(existing_channel)
+                        return # 終了
+                    else:
+                        # データベースにはあるがチャンネルがない場合は不整合なので削除して新規作成へ
+                        await database.remove_room(existing_room["channel_id"])
+
                 guild = member.guild
                 category = after.channel.category
                 channel_name = f"🔊│{member.display_name}の部屋"
@@ -194,15 +208,14 @@ async def on_voice_state_update(member, before, after):
                     reason=f"Auto-VC created for {member.display_name}"
                 )
                 
-                # データベースに一時部屋として登録（追跡用）
-                # 一時部屋なので期限は100年後などにするか、NULLを許容
+                # データベースに一時部屋として登録
                 far_future = now + datetime.timedelta(days=36500)
                 await database.add_room(new_channel.id, member.id, "一時部屋", far_future)
                 
                 # ユーザーを移動
                 await member.move_to(new_channel)
             except Exception as e:
-                print(f"Error creating Auto-VC: {e}")
+                print(f"Error creating/moving Auto-VC: {e}")
         # ------------------------
 
         # カスタムVCへの入室であれば、無人タイマーを解除
