@@ -30,6 +30,7 @@ ROOM_SETTINGS = {
     "高級宿": {"price": 30000, "duration_hours": 24},
     "カスタムVC": {"price": 30000, "duration_hours": 24}
 }
+CREATE_VC_CHANNEL_ID = 1503678696781906060
 
 # 面接・入界設定
 NEW_MEMBER_ROLE_NAME = "人間"
@@ -145,6 +146,32 @@ async def on_voice_state_update(member, before, after):
     if after.channel is not None:
         if before.channel is None or before.channel != after.channel:
             bot.vc_sessions[user_id] = now
+        
+        # --- 自動VC作成ロジック ---
+        if after.channel.id == CREATE_VC_CHANNEL_ID:
+            try:
+                guild = member.guild
+                category = after.channel.category
+                channel_name = f"🔊│{member.display_name}の部屋"
+                
+                # チャンネル作成
+                new_channel = await guild.create_voice_channel(
+                    name=channel_name,
+                    category=category,
+                    reason=f"Auto-VC created for {member.display_name}"
+                )
+                
+                # データベースに一時部屋として登録（追跡用）
+                # 一時部屋なので期限は100年後などにするか、NULLを許容
+                far_future = now + datetime.timedelta(days=36500)
+                await database.add_room(new_channel.id, member.id, "一時部屋", far_future)
+                
+                # ユーザーを移動
+                await member.move_to(new_channel)
+            except Exception as e:
+                print(f"Error creating Auto-VC: {e}")
+        # ------------------------
+
         # カスタムVCへの入室であれば、無人タイマーを解除
         bot.empty_custom_vcs.pop(after.channel.id, None)
     
@@ -165,11 +192,19 @@ async def on_voice_state_update(member, before, after):
                     if lv_channel:
                         await lv_channel.send(f"🎊 {member.mention} が **VCレベルアップ！** (Lv.{new_lv-1} ➔ **{new_lv}**)")
         
-        # 退出した部屋が無人になった場合、それがカスタムVCならタイマーを開始
+        # 退出した部屋が無人になった場合
         if len(before.channel.members) == 0:
             room_data = await database.get_room(before.channel.id)
-            if room_data and room_data["room_type"] == "カスタムVC":
-                bot.empty_custom_vcs[before.channel.id] = now
+            if room_data:
+                if room_data["room_type"] == "一時部屋":
+                    # 一時部屋は無人になったら即座に削除
+                    try:
+                        await before.channel.delete()
+                        await database.remove_room(before.channel.id)
+                    except:
+                        pass
+                elif room_data["room_type"] == "カスタムVC":
+                    bot.empty_custom_vcs[before.channel.id] = now
 
 @bot.event
 async def on_guild_channel_delete(channel):
