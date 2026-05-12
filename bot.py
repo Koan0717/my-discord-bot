@@ -196,7 +196,7 @@ async def on_voice_state_update(member, before, after):
                             except: pass
                         
                         if existing_channel:
-                            await asyncio.sleep(1)
+                            await asyncio.sleep(0.3)
                             if member.voice and member.voice.channel and member.voice.channel.id == CREATE_VC_CHANNEL_ID:
                                 await member.move_to(existing_channel)
                             return
@@ -216,7 +216,7 @@ async def on_voice_state_update(member, before, after):
                                 now_naive = database.get_now_naive()
                                 far_future = now_naive + datetime.timedelta(days=36500)
                                 await database.add_room(existing_ch.id, member.id, "一時部屋", far_future)
-                                await asyncio.sleep(1)
+                                await asyncio.sleep(0.3)
                                 if member.voice and member.voice.channel and member.voice.channel.id == CREATE_VC_CHANNEL_ID:
                                     await member.move_to(existing_ch)
                                 return
@@ -242,7 +242,7 @@ async def on_voice_state_update(member, before, after):
                     
                     # ユーザーを移動 (複数回試行)
                     for i in range(3):
-                        await asyncio.sleep(1.5)
+                        await asyncio.sleep(0.5 if i == 0 else 1.0)
                         if member.voice and member.voice.channel and member.voice.channel.id == CREATE_VC_CHANNEL_ID:
                             try:
                                 await member.move_to(new_channel)
