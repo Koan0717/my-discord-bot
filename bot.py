@@ -49,6 +49,7 @@ class EconomyBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
+        intents.members = True
         super().__init__(command_prefix="!", intents=intents)
         self.message_cooldowns = {} # {user_id: timestamp} (通貨用)
         self.tc_xp_cooldowns = {}   # {user_id: timestamp} (経験値用)
@@ -227,9 +228,6 @@ async def on_voice_state_update(member, before, after):
         if join_time:
             duration_minutes = int((now - join_time).total_seconds() / 60)
             if duration_minutes > 0:
-                reward = duration_minutes * VC_REWARD_PER_MIN
-                await database.add_balance(user_id, reward)
-                
                 # VC経験値の加算
                 xp_reward = duration_minutes * VC_XP_PER_MIN
                 new_lv = await database.add_xp(user_id, xp_reward, "vc")
