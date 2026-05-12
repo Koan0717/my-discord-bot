@@ -34,7 +34,7 @@ ROOM_SETTINGS = {
 # 面接・入界設定
 NEW_MEMBER_ROLE_NAME = "人間"
 PENDING_MEMBER_ROLE_NAME = "入界待機者"
-INTERVIEWER_ROLE_NAMES = ["面接官", "大魔王", "黒棺秘書官", "機巧墓守"]
+INTERVIEWER_ROLE_NAMES = ["最高亡魂導師", "亡魂導師"]
 INITIAL_COINS = 30000
 
 # ------------
@@ -586,7 +586,9 @@ class InterviewerGroup(app_commands.Group):
     @app_commands.command(name="パネル設置_入界手続き", description="入界手続きパネルを送信")
     async def s_int(self, it):
         user_roles = [r.name for r in it.user.roles]
-        if not any(r in INTERVIEWER_ROLE_NAMES for r in user_roles) and not it.user.guild_permissions.administrator:
+        is_interviewer = any(r in INTERVIEWER_ROLE_NAMES for r in user_roles)
+        is_admin = any(r in ADMIN_ROLE_NAMES for r in user_roles)
+        if not is_interviewer and not is_admin and not it.user.guild_permissions.administrator:
             return await it.response.send_message("権限がありません。", ephemeral=True)
         await it.channel.send(embed=discord.Embed(title="✨ 入界手続き", description="下のボタンから登録してください。", color=discord.Color.green()), view=InterviewPanelView())
         await it.response.send_message("設置完了", ephemeral=True)
