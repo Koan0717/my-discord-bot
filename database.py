@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
+JST = datetime.timezone(datetime.timedelta(hours=9))
 
 # 接続プールを保持する変数
 pool = None
@@ -45,11 +46,10 @@ async def setup_db():
 async def get_user(user_id: int):
     p = await get_pool()
     async with p.acquire() as conn:
-        row = await conn.fetchrow('SELECT balance, last_daily, chinchiro_count, chinchiro_last_date, tc_xp, tc_level, vc_xp, vc_level FROM users WHERE user_id = $1', user_id)
+        row = await conn.fetchrow('SELECT balance, chinchiro_count, chinchiro_last_date, tc_xp, tc_level, vc_xp, vc_level FROM users WHERE user_id = $1', user_id)
         if row:
             return {
                 "balance": row['balance'], 
-                "last_daily": row['last_daily'].isoformat() if row['last_daily'] else None,
                 "chinchiro_count": row['chinchiro_count'],
                 "chinchiro_last_date": row['chinchiro_last_date'],
                 "tc_xp": row['tc_xp'],
@@ -59,7 +59,7 @@ async def get_user(user_id: int):
             }
         else:
             await conn.execute('INSERT INTO users (user_id, balance) VALUES ($1, 0) ON CONFLICT (user_id) DO NOTHING', user_id)
-            return {"balance": 0, "last_daily": None, "chinchiro_count": 0, "chinchiro_last_date": None, "tc_xp": 0, "tc_level": 1, "vc_xp": 0, "vc_level": 1}
+            return {"balance": 0, "chinchiro_count": 0, "chinchiro_last_date": None, "tc_xp": 0, "tc_level": 1, "vc_xp": 0, "vc_level": 1}
 
 async def get_balance(user_id: int) -> int:
     user = await get_user(user_id)
@@ -81,11 +81,7 @@ async def remove_balance(user_id: int, amount: int) -> bool:
         await conn.execute('UPDATE users SET balance = balance - $1 WHERE user_id = $2', amount, user_id)
     return True
 
-async def update_last_daily(user_id: int, timestamp: datetime.datetime):
-    await get_user(user_id)
-    p = await get_pool()
-    async with p.acquire() as conn:
-        await conn.execute('UPDATE users SET last_daily = $1 WHERE user_id = $2', timestamp, user_id)
+
 
 async def reset_gambling_count(user_id: int, date_str: str):
     p = await get_pool()
@@ -154,7 +150,7 @@ async def extend_room(channel_id: int, new_expire_at: datetime.datetime):
         await conn.execute('UPDATE rooms SET expire_at = $1 WHERE channel_id = $2', new_expire_at, channel_id)
 
 async def get_expired_rooms():
-    now = datetime.datetime.now()
+    now = datetime.datetime.now(JST)
     p = await get_pool()
     async with p.acquire() as conn:
         rows = await conn.fetch('SELECT channel_id FROM rooms WHERE expire_at <= $1', now)
