@@ -193,7 +193,12 @@ async def on_voice_state_update(member, before, after):
                     # 既に部屋がある場合、その部屋に移動させる（存在確認含む）
                     existing_channel = bot.get_channel(existing_room["channel_id"])
                     if existing_channel:
-                        await member.move_to(existing_channel)
+                        print(f"Moving {member.display_name} to existing Auto-VC {existing_channel.id}")
+                        await asyncio.sleep(0.5)
+                        try:
+                            await member.move_to(existing_channel)
+                        except:
+                            pass
                         return # 終了
                     else:
                         # データベースにはあるがチャンネルがない場合は不整合なので削除して新規作成へ
@@ -214,10 +219,14 @@ async def on_voice_state_update(member, before, after):
                 far_future = now + datetime.timedelta(days=36500)
                 await database.add_room(new_channel.id, member.id, "一時部屋", far_future)
                 
-                # ユーザーを移動
-                await member.move_to(new_channel)
+                # ユーザーを移動 (少し待機してから移動させるのが安定します)
+                await asyncio.sleep(1)
+                try:
+                    await member.move_to(new_channel)
+                except Exception as move_e:
+                    print(f"Failed to move member to Auto-VC: {move_e}")
             except Exception as e:
-                print(f"Error creating/moving Auto-VC: {e}")
+                print(f"Error in Auto-VC creation flow: {e}")
         # ------------------------
 
         # カスタムVCへの入室であれば、無人タイマーを解除
@@ -244,10 +253,11 @@ async def on_voice_state_update(member, before, after):
                 if room_data["room_type"] == "一時部屋":
                     # 一時部屋は無人になったら即座に削除
                     try:
+                        print(f"Deleting empty Auto-VC: {before.channel.name} ({before.channel.id})")
                         await before.channel.delete()
                         await database.remove_room(before.channel.id)
-                    except:
-                        pass
+                    except Exception as del_e:
+                        print(f"Failed to delete Auto-VC: {del_e}")
                 elif room_data["room_type"] == "カスタムVC":
                     bot.empty_custom_vcs[before.channel.id] = now
 
