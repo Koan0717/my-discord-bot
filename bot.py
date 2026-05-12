@@ -178,12 +178,16 @@ async def on_voice_state_update(member, before, after):
 
         # VCに参加・移動した時
         if after.channel is not None:
-            if before.channel is None or before.channel != after.channel:
+            # 入室・移動を検知
+            is_join = before.channel is None or before.channel.id != after.channel.id
+            if is_join:
                 bot.vc_sessions[user_id] = now
+                print(f"[VC-Join] {member.display_name} joined {after.channel.name}")
             
             # --- 自動VC作成ロジック ---
             if after.channel.id == CREATE_VC_CHANNEL_ID:
                 try:
+                    print(f"[Auto-VC] Triggered for {member.display_name}")
                     pool = await database.get_pool()
                     async with pool.acquire() as conn:
                         existing_room = await conn.fetchrow('SELECT channel_id FROM rooms WHERE owner_id = $1 AND room_type = $2', member.id, "一時部屋")
@@ -195,21 +199,19 @@ async def on_voice_state_update(member, before, after):
                             except: pass
                         
                         if existing_channel:
-                            print(f"[Auto-VC] Moving {member.display_name} to existing room {existing_channel.id}")
+                            print(f"[Auto-VC] Existing room found ({existing_channel.id}), moving user...")
                             await asyncio.sleep(1)
-                            if member.voice and member.voice.channel and member.voice.channel.id == CREATE_VC_CHANNEL_ID:
+                            try:
                                 await member.move_to(existing_channel)
+                                print(f"[Auto-VC] Successfully moved {member.display_name} to existing room")
+                            except Exception as e:
+                                print(f"[Auto-VC] Move to existing failed: {e}")
                             return
                         else:
                             await database.remove_room(existing_room["channel_id"])
 
                     guild = member.guild
                     category = after.channel.category
-                    
-                    # 権限確認
-                    perms = category.permissions_for(guild.me) if category else guild.me.guild_permissions
-                    if not perms.manage_channels or not perms.move_members:
-                        print(f"[Auto-VC] Missing permissions: manage_channels={perms.manage_channels}, move_members={perms.move_members}")
                     
                     channel_name = f"🔊│{member.display_name}の部屋"
                     new_channel = await guild.create_voice_channel(
@@ -218,13 +220,24 @@ async def on_voice_state_update(member, before, after):
                         reason=f"Auto-VC for {member.display_name}"
                     )
                     
+                    # 確実にDBに保存されるのを待つ
                     far_future = now + datetime.timedelta(days=36500)
                     await database.add_room(new_channel.id, member.id, "一時部屋", far_future)
+                    print(f"[Auto-VC] Created room {new_channel.id} and registered in DB")
                     
-                    print(f"[Auto-VC] Created {new_channel.name}, moving {member.display_name}")
-                    await asyncio.sleep(1.5) # 安定のため少し長めに待機
-                    if member.voice and member.voice.channel and member.voice.channel.id == CREATE_VC_CHANNEL_ID:
-                        await member.move_to(new_channel)
+                    # ユーザーを移動 (複数回試行)
+                    for i in range(3):
+                        await asyncio.sleep(1.5)
+                        if member.voice and member.voice.channel and member.voice.channel.id == CREATE_VC_CHANNEL_ID:
+                            try:
+                                await member.move_to(new_channel)
+                                print(f"[Auto-VC] Successfully moved {member.display_name} on attempt {i+1}")
+                                break
+                            except Exception as move_e:
+                                print(f"[Auto-VC] Move attempt {i+1} failed: {move_e}")
+                        else:
+                            print(f"[Auto-VC] User already left the trigger channel.")
+                            break
                 except Exception as e:
                     print(f"[Auto-VC] Error in creation: {e}")
             # ------------------------
@@ -865,6 +878,24 @@ class AdminGroup(app_commands.Group):
         )
         await it.channel.send(embed=embed, view=EmblemRequestPanelView())
         await it.response.send_message("設置完了", ephemeral=True)
+
+    @app_commands.command(name="デバッグ_vc", description="【管理者用】一時部屋のDB登録状況を確認します")
+    @is_admin()
+    async def debug_vc(self, it):
+        pool = await database.get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch('SELECT * FROM rooms WHERE room_type = $1', "一時部屋")
+        
+        if not rows:
+            return await it.response.send_message("現在、DBに登録されている一時部屋はありません。", ephemeral=True)
+        
+        txt = "【DB登録済みの一時部屋】\n"
+        for r in rows:
+            ch = bot.get_channel(r['channel_id'])
+            status = f"✅ 存在 ({ch.name})" if ch else "❌ チャンネル消失"
+            txt += f"- CH ID: {r['channel_id']} | 所有者ID: {r['owner_id']} | {status}\n"
+        
+        await it.response.send_message(txt[:2000], ephemeral=True)
 
 class InterviewerGroup(app_commands.Group):
     def __init__(self): super().__init__(name="面接官", description="【面接官専用】手続きコマンド")
