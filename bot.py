@@ -69,6 +69,7 @@ class EconomyBot(commands.Bot):
         self.add_view(InterviewPanelView())
         self.add_view(EmblemRequestPanelView())
         self.add_view(TicketControlView())
+        self.add_view(VCRenamePanelView())
         
         # グループの登録
         self.tree.add_command(AdminGroup())
@@ -175,20 +176,15 @@ async def on_voice_state_update(member, before, after):
         if member.bot: return
         user_id = member.id
         now_naive = database.get_now_naive()
-        now_aware = datetime.datetime.now(JST) # 表示用などはAwareを維持
+        now_aware = datetime.datetime.now(JST)
 
-        # VCに参加・移動した時
         if after.channel is not None:
-            # 入室・移動を検知
             is_join = before.channel is None or before.channel.id != after.channel.id
             if is_join:
                 bot.vc_sessions[user_id] = now_aware
-                print(f"[VC-Join] {member.display_name} joined {after.channel.name}")
             
-            # --- 自動VC作成ロジック ---
             if after.channel.id == CREATE_VC_CHANNEL_ID:
                 try:
-                    print(f"[Auto-VC] Triggered for {member.display_name}")
                     pool = await database.get_pool()
                     async with pool.acquire() as conn:
                         existing_room = await conn.fetchrow('SELECT channel_id FROM rooms WHERE owner_id = $1 AND room_type = $2', member.id, "一時部屋")
@@ -200,13 +196,9 @@ async def on_voice_state_update(member, before, after):
                             except: pass
                         
                         if existing_channel:
-                            print(f"[Auto-VC] Existing room found ({existing_channel.id}), moving user...")
                             await asyncio.sleep(1)
-                            try:
+                            if member.voice and member.voice.channel and member.voice.channel.id == CREATE_VC_CHANNEL_ID:
                                 await member.move_to(existing_channel)
-                                print(f"[Auto-VC] Successfully moved {member.display_name} to existing room")
-                            except Exception as e:
-                                print(f"[Auto-VC] Move to existing failed: {e}")
                             return
                         else:
                             await database.remove_room(existing_room["channel_id"])
@@ -215,6 +207,19 @@ async def on_voice_state_update(member, before, after):
                     category = after.channel.category
                     
                     channel_name = f"🔊│{member.display_name}の部屋"
+
+                    # バックアップチェック: DBにはないが、既に同名のチャンネルがカテゴリ内にある場合
+                    if category:
+                        for existing_ch in category.voice_channels:
+                            if existing_ch.name == channel_name:
+                                # DBに再登録を試みる
+                                now_naive = database.get_now_naive()
+                                far_future = now_naive + datetime.timedelta(days=36500)
+                                await database.add_room(existing_ch.id, member.id, "一時部屋", far_future)
+                                await asyncio.sleep(1)
+                                if member.voice and member.voice.channel and member.voice.channel.id == CREATE_VC_CHANNEL_ID:
+                                    await member.move_to(existing_ch)
+                                return
                     new_channel = await guild.create_voice_channel(
                         name=channel_name,
                         category=category,
@@ -226,6 +231,14 @@ async def on_voice_state_update(member, before, after):
                     far_future = now_naive + datetime.timedelta(days=36500)
                     await database.add_room(new_channel.id, member.id, "一時部屋", far_future)
                     print(f"[Auto-VC] Created room {new_channel.id} and registered in DB")
+                    
+                    # 部屋の設定パネルを送信
+                    embed = discord.Embed(
+                        title="⚙️ 部屋の設定",
+                        description="このボタンから部屋の名前や人数制限を変更できます。",
+                        color=discord.Color.blue()
+                    )
+                    await new_channel.send(embed=embed, view=VCRenamePanelView())
                     
                     # ユーザーを移動 (複数回試行)
                     for i in range(3):
@@ -241,10 +254,7 @@ async def on_voice_state_update(member, before, after):
                             print(f"[Auto-VC] User already left the trigger channel.")
                             break
                 except Exception as e:
-                    err_msg = f"❌ [Auto-VC作成エラー]\n作成者: {member.display_name}\nエラー内容: {e}"
-                    print(err_msg)
-                    try: await after.channel.send(err_msg)
-                    except: pass
+                    print(f"[Auto-VC] Error: {e}")
             # ------------------------
 
             # カスタムVCへの入室であれば、無人タイマーを解除
@@ -466,6 +476,34 @@ class InterviewPanelView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None)
     @discord.ui.button(label="入界手続きを開始", style=discord.ButtonStyle.success, emoji="📝", custom_id="persistent_interview_btn")
     async def start_button(self, interaction, button): await interaction.response.send_modal(InterviewNicknameModal())
+
+class VCRenamePanelView(discord.ui.View):
+    def __init__(self): super().__init__(timeout=None)
+    
+    @discord.ui.button(label="VC名を変更", style=discord.ButtonStyle.primary, emoji="📝", custom_id="persistent_vc_rename_panel_btn")
+    async def rename_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.user.voice or not interaction.user.voice.channel:
+            return await interaction.response.send_message("ボイスチャンネルに参加していません。", ephemeral=True)
+        
+        room_data = await database.get_room(interaction.user.voice.channel.id)
+        if not room_data or room_data["owner_id"] != interaction.user.id:
+            # 管理者なら許可
+            if not interaction.user.guild_permissions.administrator:
+                return await interaction.response.send_message("自分が作成した（所有している）部屋ではありません。", ephemeral=True)
+        
+        await interaction.response.send_modal(RenameModal())
+
+    @discord.ui.button(label="人数制限を変更", style=discord.ButtonStyle.secondary, emoji="👥", custom_id="persistent_vc_limit_panel_btn")
+    async def limit_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.user.voice or not interaction.user.voice.channel:
+            return await interaction.response.send_message("ボイスチャンネルに参加していません。", ephemeral=True)
+        
+        room_data = await database.get_room(interaction.user.voice.channel.id)
+        if not room_data or room_data["owner_id"] != interaction.user.id:
+            if not interaction.user.guild_permissions.administrator:
+                return await interaction.response.send_message("自分が作成した（所有している）部屋ではありません。", ephemeral=True)
+        
+        await interaction.response.send_modal(LimitModal())
 
 # --- スタンプ依頼システム ---
 
@@ -884,6 +922,21 @@ class AdminGroup(app_commands.Group):
         await it.channel.send(embed=embed, view=EmblemRequestPanelView())
         await it.response.send_message("設置完了", ephemeral=True)
 
+    @app_commands.command(name="パネル設置_vc管理", description="VC管理（名前変更・人数制限）パネルを送信")
+    @is_admin()
+    async def s_vc_manage(self, it):
+        embed = discord.Embed(
+            title="⚙️ VC管理パネル",
+            description=(
+                "自分が作成した部屋（一時部屋、カスタムVC、宿など）の設定を変更できます。\n\n"
+                "**1. 設定したいVCに参加する**\n"
+                "**2. 下のボタンを押す**"
+            ),
+            color=discord.Color.blue()
+        )
+        await it.channel.send(embed=embed, view=VCRenamePanelView())
+        await it.response.send_message("設置完了", ephemeral=True)
+
     @app_commands.command(name="デバッグ_vc", description="【管理者用】一時部屋のDB登録状況を確認します")
     @is_admin()
     async def debug_vc(self, it):
@@ -901,23 +954,6 @@ class AdminGroup(app_commands.Group):
             txt += f"- CH ID: {r['channel_id']} | 所有者ID: {r['owner_id']} | {status}\n"
         
         await it.response.send_message(txt[:2000], ephemeral=True)
-
-    @app_commands.command(name="sql_実行", description="【管理者専用】SQLを直接実行します（デバッグ用）")
-    @is_admin()
-    async def sql_exec(self, it, query: str):
-        try:
-            pool = await database.get_pool()
-            async with pool.acquire() as conn:
-                if query.strip().lower().startswith("select"):
-                    rows = await conn.fetch(query)
-                    if not rows: return await it.response.send_message("結果は空です。", ephemeral=True)
-                    txt = "【実行結果】\n" + "\n".join([str(dict(r)) for r in rows])
-                    await it.response.send_message(txt[:2000], ephemeral=True)
-                else:
-                    res = await conn.execute(query)
-                    await it.response.send_message(f"実行完了: {res}", ephemeral=True)
-        except Exception as e:
-            await it.response.send_message(f"SQLエラー: {e}", ephemeral=True)
 
 class InterviewerGroup(app_commands.Group):
     def __init__(self): super().__init__(name="面接官", description="【面接官専用】手続きコマンド")
