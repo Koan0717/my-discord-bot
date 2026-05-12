@@ -29,7 +29,7 @@ ROOM_SETTINGS = {
     "高級宿": {"price": 30000, "duration_hours": 24},
     "カスタムVC": {"price": 30000, "duration_hours": 24}
 }
-CREATE_VC_CHANNEL_ID = 1503678696781906060
+CREATE_VC_CHANNEL_ID = 1503789689184714902
 
 # 面接・入界設定
 NEW_MEMBER_ROLE_NAME = "人間"
