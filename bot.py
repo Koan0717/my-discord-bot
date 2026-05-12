@@ -174,14 +174,15 @@ async def on_voice_state_update(member, before, after):
     try:
         if member.bot: return
         user_id = member.id
-        now = datetime.datetime.now(JST)
+        now_naive = database.get_now_naive()
+        now_aware = datetime.datetime.now(JST) # 表示用などはAwareを維持
 
         # VCに参加・移動した時
         if after.channel is not None:
             # 入室・移動を検知
             is_join = before.channel is None or before.channel.id != after.channel.id
             if is_join:
-                bot.vc_sessions[user_id] = now
+                bot.vc_sessions[user_id] = now_aware
                 print(f"[VC-Join] {member.display_name} joined {after.channel.name}")
             
             # --- 自動VC作成ロジック ---
@@ -221,7 +222,8 @@ async def on_voice_state_update(member, before, after):
                     )
                     
                     # 確実にDBに保存されるのを待つ (TIMESTAMP型に合わせてtimezone情報を抜く)
-                    far_future = (now + datetime.timedelta(days=36500)).replace(tzinfo=None)
+                    now_naive = database.get_now_naive()
+                    far_future = now_naive + datetime.timedelta(days=36500)
                     await database.add_room(new_channel.id, member.id, "一時部屋", far_future)
                     print(f"[Auto-VC] Created room {new_channel.id} and registered in DB")
                     
@@ -252,7 +254,7 @@ async def on_voice_state_update(member, before, after):
         if before.channel is not None and (after.channel is None or before.channel != after.channel):
             join_time = bot.vc_sessions.pop(user_id, None)
             if join_time:
-                duration_minutes = int((now - join_time).total_seconds() / 60)
+                duration_minutes = int((now_aware - join_time).total_seconds() / 60)
                 if duration_minutes > 0:
                     xp_reward = duration_minutes * VC_XP_PER_MIN
                     new_lv = await database.add_xp(user_id, xp_reward, "vc")
@@ -273,7 +275,7 @@ async def on_voice_state_update(member, before, after):
                         except Exception as del_e:
                             print(f"[Auto-VC] Delete error: {del_e}")
                     elif room_data["room_type"] == "カスタムVC":
-                        bot.empty_custom_vcs[before.channel.id] = now
+                        bot.empty_custom_vcs[before.channel.id] = now_aware
     except Exception as global_e:
         print(f"CRITICAL ERROR in on_voice_state_update: {global_e}")
 
@@ -646,7 +648,7 @@ async def process_room_purchase(interaction: discord.Interaction, room_type: str
                            interaction.user: discord.PermissionOverwrite(manage_channels=True, move_members=True) }
             if room_type == "高級宿": overwrites[interaction.user].manage_permissions = True
             channel = await interaction.guild.create_voice_channel(name=f"{room_type}-{interaction.user.display_name}", category=interaction.channel.category, overwrites=overwrites, user_limit=(2 if room_type=="宿" else 0))
-            expire_at = (datetime.datetime.now(JST) + datetime.timedelta(hours=duration)).replace(tzinfo=None)
+            expire_at = database.get_now_naive() + datetime.timedelta(hours=duration)
             await database.add_room(channel.id, owner_id, room_type, expire_at)
             await interaction.edit_original_response(content=f"✅ {channel.mention} を作成しました！", view=None)
             view = CustomRoomControlView() if room_type=="カスタムVC" else (RoomControlView() if room_type=="高級宿" else InnControlView())
