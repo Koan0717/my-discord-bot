@@ -68,6 +68,7 @@ class EconomyBot(commands.Bot):
         self.add_view(SlotView())
         self.add_view(InterviewPanelView())
         self.add_view(EmblemRequestPanelView())
+        self.add_view(TicketControlView())
         
         # グループの登録
         self.tree.add_command(AdminGroup())
@@ -454,36 +455,88 @@ class EmblemRequestModal(discord.ui.Modal, title='スタンプ制作依頼'):
         self.target_member = target_member
 
     async def on_submit(self, interaction: discord.Interaction):
-        embed = discord.Embed(
-            title="🎨 新しいスタンプ依頼",
-            description=f"**担当者:** {self.target_member.mention}\n**依頼者:** {interaction.user.mention}\n\n**【依頼内容】**\n{self.details.value}",
-            color=discord.Color.blue(),
-            timestamp=datetime.datetime.now(JST)
-        )
-        # 依頼が投稿される場所（パネルのあるチャンネル）に送信
-        await interaction.channel.send(content=f"{self.target_member.mention} 依頼が届きました！", embed=embed)
-        await interaction.response.send_message(f"{self.target_member.display_name} さんに依頼を送信しました！", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        
+        # チケット番号の決定 (既存のticket-チャンネルを数える)
+        ticket_channels = [c for c in guild.channels if c.name.startswith("ticket-")]
+        ticket_num = len(ticket_channels) + 1
+        channel_name = f"ticket-{ticket_num:03d}"
+        
+        # 権限設定
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+            self.target_member: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        }
+        
+        # 管理・紋章師系ロールにも権限を付与
+        for role_name in ADMIN_ROLE_NAMES + [EMBLEM_MANAGER_ROLE_NAME, EMBLEM_MASTER_ROLE_NAME]:
+            role = discord.utils.get(guild.roles, name=role_name)
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+
+        try:
+            # チャンネル作成 (パネルがあるカテゴリに作成)
+            category = interaction.channel.category
+            ticket_channel = await guild.create_text_channel(
+                name=channel_name,
+                category=category,
+                overwrites=overwrites,
+                reason=f"Stamp request ticket for {interaction.user.display_name}"
+            )
+            
+            # チケット内での案内メッセージ
+            embed = discord.Embed(
+                title="🎨 スタンプ制作依頼チケット",
+                description=(
+                    f"**依頼者:** {interaction.user.mention}\n"
+                    f"**担当者:** {self.target_member.mention}\n\n"
+                    f"**【依頼内容】**\n{self.details.value}\n\n"
+                    "内容の確認や相談はこちらのチャンネルで行ってください。\n"
+                    "完了したら下のボタンでチケットを閉じることができます。"
+                ),
+                color=discord.Color.blue()
+            )
+            
+            # 管理・統括・紋章師をメンション（通知用）
+            mentions = []
+            for role_name in ADMIN_ROLE_NAMES + [EMBLEM_MANAGER_ROLE_NAME, EMBLEM_MASTER_ROLE_NAME]:
+                role = discord.utils.get(guild.roles, name=role_name)
+                if role: mentions.append(role.mention)
+            
+            mention_str = " ".join(mentions)
+            await ticket_channel.send(content=f"{interaction.user.mention} {self.target_member.mention} {mention_str}", embed=embed, view=TicketControlView())
+            
+            await interaction.followup.send(f"✅ チケットを作成しました: {ticket_channel.mention}", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"エラーが発生しました: {e}", ephemeral=True)
 
 class EmblemSelectView(discord.ui.View):
     def __init__(self, guild):
         super().__init__(timeout=60)
-        # 「紋章師」ロールを持つメンバーを取得
-        emblem_role = discord.utils.get(guild.roles, name=EMBLEM_MASTER_ROLE_NAME)
+        # 「紋章師」と「紋章師統括」ロールを持つメンバーを取得
+        master_role = discord.utils.get(guild.roles, name=EMBLEM_MASTER_ROLE_NAME)
+        manager_role = discord.utils.get(guild.roles, name=EMBLEM_MANAGER_ROLE_NAME)
+        
+        member_set = set()
+        if master_role: member_set.update(master_role.members)
+        if manager_role: member_set.update(manager_role.members)
+        
         options = []
-        if emblem_role:
-            for member in emblem_role.members:
-                options.append(discord.SelectOption(
-                    label=member.display_name,
-                    value=str(member.id),
-                    description=f"{member.name}"
-                ))
+        for member in sorted(member_set, key=lambda m: m.display_name):
+            options.append(discord.SelectOption(
+                label=member.display_name,
+                value=str(member.id),
+                description=f"{member.name}"
+            ))
         
         if not options:
             self.add_item(discord.ui.Button(label="現在、依頼可能な紋章師がいません", disabled=True))
         else:
             select = discord.ui.Select(
                 placeholder="担当する紋章師を選択してください...",
-                options=options[:25] # Discordの制限で最大25人まで
+                options=options[:25]
             )
             select.callback = self.select_callback
             self.add_item(select)
@@ -505,6 +558,29 @@ class EmblemRequestPanelView(discord.ui.View):
     async def request_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         view = EmblemSelectView(interaction.guild)
         await interaction.response.send_message("担当者を選択してください：", view=view, ephemeral=True)
+
+class TicketControlView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="チケットを閉じる", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="persistent_close_ticket_btn")
+    async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(title="確認", description="このチケットを閉じてもよろしいですか？", color=discord.Color.red())
+        await interaction.response.send_message(embed=embed, view=TicketCloseConfirmView(), ephemeral=True)
+
+class TicketCloseConfirmView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+
+    @discord.ui.button(label="閉じる", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("チケットを削除します...")
+        await asyncio.sleep(2)
+        await interaction.channel.delete()
+
+    @discord.ui.button(label="キャンセル", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="キャンセルしました。", embed=None, view=None)
 
 # --- VC購入システム ---
 
