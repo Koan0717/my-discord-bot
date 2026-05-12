@@ -14,13 +14,12 @@ CURRENCY_NAME = "コイン"
 JST = datetime.timezone(datetime.timedelta(hours=9))
 
 # 獲得量の設定
-MSG_REWARD = 5        # メッセージ1通あたりの獲得量
 MSG_COOLDOWN = 60     # メッセージ獲得のクールダウン（秒）
-VC_REWARD_PER_MIN = 10# VC滞在1分あたりの獲得量
 
 
 # 経験値の設定
 TC_XP_REWARD = 10      # メッセージ1通あたりのXP
+TC_XP_COOLDOWN = 10    # TC XP獲得のクールダウン（秒）
 VC_XP_PER_MIN = 15     # VC滞在1分あたりのXP
 LEVEL_UP_CHANNEL_ID = 1503480861105066024
 
@@ -36,6 +35,9 @@ CREATE_VC_CHANNEL_ID = 1503678696781906060
 NEW_MEMBER_ROLE_NAME = "人間"
 PENDING_MEMBER_ROLE_NAME = "入界待機者"
 INTERVIEWER_ROLE_NAMES = ["最高亡魂導師", "亡魂導師"]
+FREE_INN_ROLE_NAME = "死者"
+EMBLEM_MANAGER_ROLE_NAME = "紋章師統括"
+EMBLEM_MASTER_ROLE_NAME = "紋章師"
 INITIAL_COINS = 30000
 
 # ------------
@@ -48,7 +50,8 @@ class EconomyBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents)
-        self.message_cooldowns = {} # {user_id: timestamp}
+        self.message_cooldowns = {} # {user_id: timestamp} (通貨用)
+        self.tc_xp_cooldowns = {}   # {user_id: timestamp} (経験値用)
         self.vc_sessions = {}       # {user_id: join_timestamp}
         self.empty_custom_vcs = {}  # {channel_id: empty_since_timestamp}
 
@@ -63,6 +66,7 @@ class EconomyBot(commands.Bot):
         self.add_view(CoinflipView())
         self.add_view(SlotView())
         self.add_view(InterviewPanelView())
+        self.add_view(EmblemRequestPanelView())
         
         # グループの登録
         self.tree.add_command(AdminGroup())
@@ -70,6 +74,7 @@ class EconomyBot(commands.Bot):
         
         await self.tree.sync()
         self.check_expired_rooms.start()
+        self.vc_reward_loop.start()
         print(f"✅ Bot is ready! Logged in as {self.user} (ID: {self.user.id})")
         print("✅ Slash commands and persistent views are synced.")
 
@@ -108,6 +113,36 @@ class EconomyBot(commands.Bot):
     async def before_check_expired_rooms(self):
         await self.wait_until_ready()
 
+    @tasks.loop(minutes=1)
+    async def vc_reward_loop(self):
+        now = datetime.datetime.now(JST)
+        for user_id, last_reward_time in list(self.vc_sessions.items()):
+            member = None
+            # 全てのサーバーからユーザーを探す（大規模でなければこれでOK）
+            for guild in self.guilds:
+                m = guild.get_member(user_id)
+                if m and m.voice and m.voice.channel:
+                    member = m
+                    break
+            
+            if member:
+                elapsed_minutes = int((now - last_reward_time).total_seconds() / 60)
+                if elapsed_minutes >= 1:
+                    xp_reward = elapsed_minutes * VC_XP_PER_MIN
+                    
+                    new_lv = await database.add_xp(user_id, xp_reward, "vc")
+                    
+                    # 更新
+                    self.vc_sessions[user_id] = now
+                    
+                    if new_lv:
+                        lv_channel = self.get_channel(LEVEL_UP_CHANNEL_ID)
+                        if lv_channel:
+                            await lv_channel.send(f"🎊 {member.mention} が **VCレベルアップ！** (Lv.{new_lv-1} ➔ **{new_lv}**)")
+            else:
+                # ユーザーがどのVCにもいない、またはオフライン
+                self.vc_sessions.pop(user_id, None)
+
 bot = EconomyBot()
 
 # --- イベント ---
@@ -119,14 +154,12 @@ async def on_message(message):
     user_id = message.author.id
     now = datetime.datetime.now(JST)
 
-    # メッセージ報酬のクールダウンチェック
-    last_msg_time = bot.message_cooldowns.get(user_id)
-    if not last_msg_time or (now - last_msg_time).total_seconds() > MSG_COOLDOWN:
-        await database.add_balance(user_id, MSG_REWARD)
-        bot.message_cooldowns[user_id] = now
-        
-        # TC経験値の加算
+    # 1. 通貨報酬の判定 (廃止済み)
+    # 2. TC経験値の判定 (クールダウンを短く設定)
+    last_xp_time = bot.tc_xp_cooldowns.get(user_id)
+    if not last_xp_time or (now - last_xp_time).total_seconds() > TC_XP_COOLDOWN:
         new_lv = await database.add_xp(user_id, TC_XP_REWARD, "tc")
+        bot.tc_xp_cooldowns[user_id] = now
         if new_lv:
             lv_channel = bot.get_channel(LEVEL_UP_CHANNEL_ID)
             if lv_channel:
@@ -277,8 +310,8 @@ async def rank(interaction: discord.Interaction, user: discord.Member = None):
         return "■" * filled + "□" * (10 - filled) + f" ({int(pct*100)}%)"
     embed = discord.Embed(title=f"📊 {target_user.display_name} のランク情報", color=discord.Color.blue())
     if target_user.avatar: embed.set_thumbnail(url=target_user.avatar.url)
-    embed.add_field(name=f"💬 TCランク (Lv.{tc_lv})", value=f"XP: {tc_xp} / {tc_next}\n`{create_progress_bar(tc_xp, tc_next)}`", inline=False)
-    embed.add_field(name=f"🎙️ VCランク (Lv.{vc_lv})", value=f"XP: {vc_xp} / {vc_next}\n`{create_progress_bar(vc_xp, vc_next)}`", inline=False)
+    embed.add_field(name=f"💬 TCランク (Lv.{tc_lv})", value=f"XP: {tc_xp} / {tc_next} (あと {tc_next - tc_xp} XP)\n`{create_progress_bar(tc_xp, tc_next)}`", inline=False)
+    embed.add_field(name=f"🎙️ VCランク (Lv.{vc_lv})", value=f"XP: {vc_xp} / {vc_next} (あと {vc_next - vc_xp} XP)\n`{create_progress_bar(vc_xp, vc_next)}`", inline=False)
     await interaction.response.send_message(embed=embed)
 
 # --- VCコントロールパネル系 ---
@@ -394,6 +427,74 @@ class InterviewPanelView(discord.ui.View):
     @discord.ui.button(label="入界手続きを開始", style=discord.ButtonStyle.success, emoji="📝", custom_id="persistent_interview_btn")
     async def start_button(self, interaction, button): await interaction.response.send_modal(InterviewNicknameModal())
 
+# --- スタンプ依頼システム ---
+
+class EmblemRequestModal(discord.ui.Modal, title='スタンプ制作依頼'):
+    details = discord.ui.TextInput(
+        label='依頼内容の詳細',
+        style=discord.TextStyle.paragraph,
+        placeholder='例: 自分のアイコンを使った「了解」スタンプをお願いします！',
+        required=True,
+        max_length=500
+    )
+
+    def __init__(self, target_member):
+        super().__init__()
+        self.target_member = target_member
+
+    async def on_submit(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="🎨 新しいスタンプ依頼",
+            description=f"**担当者:** {self.target_member.mention}\n**依頼者:** {interaction.user.mention}\n\n**【依頼内容】**\n{self.details.value}",
+            color=discord.Color.blue(),
+            timestamp=datetime.datetime.now(JST)
+        )
+        # 依頼が投稿される場所（パネルのあるチャンネル）に送信
+        await interaction.channel.send(content=f"{self.target_member.mention} 依頼が届きました！", embed=embed)
+        await interaction.response.send_message(f"{self.target_member.display_name} さんに依頼を送信しました！", ephemeral=True)
+
+class EmblemSelectView(discord.ui.View):
+    def __init__(self, guild):
+        super().__init__(timeout=60)
+        # 「紋章師」ロールを持つメンバーを取得
+        emblem_role = discord.utils.get(guild.roles, name=EMBLEM_MASTER_ROLE_NAME)
+        options = []
+        if emblem_role:
+            for member in emblem_role.members:
+                options.append(discord.SelectOption(
+                    label=member.display_name,
+                    value=str(member.id),
+                    description=f"{member.name}"
+                ))
+        
+        if not options:
+            self.add_item(discord.ui.Button(label="現在、依頼可能な紋章師がいません", disabled=True))
+        else:
+            select = discord.ui.Select(
+                placeholder="担当する紋章師を選択してください...",
+                options=options[:25] # Discordの制限で最大25人まで
+            )
+            select.callback = self.select_callback
+            self.add_item(select)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        user_id = int(interaction.data['values'][0])
+        target_member = interaction.guild.get_member(user_id)
+        if not target_member:
+            await interaction.response.send_message("メンバーが見つかりませんでした。", ephemeral=True)
+            return
+        
+        await interaction.response.send_modal(EmblemRequestModal(target_member))
+
+class EmblemRequestPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="スタンプを依頼する", style=discord.ButtonStyle.primary, emoji="🎨", custom_id="persistent_emblem_req_btn")
+    async def request_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = EmblemSelectView(interaction.guild)
+        await interaction.response.send_message("担当者を選択してください：", view=view, ephemeral=True)
+
 # --- VC購入システム ---
 
 async def process_room_purchase(interaction: discord.Interaction, room_type: str, is_confirm_view: bool = False):
@@ -406,10 +507,16 @@ async def process_room_purchase(interaction: discord.Interaction, room_type: str
     
     settings = ROOM_SETTINGS[room_type]
     price, duration = settings["price"], settings["duration_hours"]
+    
+    # 死者ロールによる無料化
+    user_roles = [r.name for r in interaction.user.roles]
+    if room_type == "宿" and FREE_INN_ROLE_NAME in user_roles:
+        price = 0
+
     if await database.get_balance(owner_id) < price:
         return await interaction.edit_original_response(content="残高が不足しています。")
     
-    if await database.remove_balance(owner_id, price):
+    if price == 0 or await database.remove_balance(owner_id, price):
         try:
             overwrites = { interaction.guild.default_role: discord.PermissionOverwrite(connect=True),
                            interaction.user: discord.PermissionOverwrite(manage_channels=True, move_members=True) }
@@ -435,7 +542,14 @@ class RoomConfirmView(discord.ui.View):
 class RoomView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None)
     @discord.ui.button(label="宿", style=discord.ButtonStyle.primary, emoji="🛖", custom_id="persistent_inn_btn")
-    async def inn(self, it, btn): await it.response.send_message(f"「宿」を購入しますか？ ({ROOM_SETTINGS['宿']['price']} {CURRENCY_NAME})", view=RoomConfirmView("宿"), ephemeral=True)
+    async def inn(self, it, btn):
+        user_roles = [r.name for r in it.user.roles]
+        price = ROOM_SETTINGS['宿']['price']
+        if FREE_INN_ROLE_NAME in user_roles:
+            msg = f"「宿」を作成しますか？\nあなたは「{FREE_INN_ROLE_NAME}」のため **無料** で作成可能です。"
+        else:
+            msg = f"「宿」を購入しますか？ ({price} {CURRENCY_NAME})"
+        await it.response.send_message(msg, view=RoomConfirmView("宿"), ephemeral=True)
     @discord.ui.button(label="高級宿", style=discord.ButtonStyle.primary, emoji="🏰", custom_id="persistent_luxury_inn_btn")
     async def luxury(self, it, btn): await it.response.send_message(f"「高級宿」を購入しますか？ ({ROOM_SETTINGS['高級宿']['price']} {CURRENCY_NAME})", view=RoomConfirmView("高級宿"), ephemeral=True)
 
@@ -609,11 +723,40 @@ class AdminGroup(app_commands.Group):
 
     @app_commands.command(name="パネル設置_宿屋", description="宿屋パネルを送信")
     @is_admin()
-    async def s_inn(self, it): await it.channel.send(embed=discord.Embed(title="🏠 宿屋", description="部屋を借りる", color=discord.Color.gold()), view=RoomView()); await it.response.send_message("設置完了", ephemeral=True)
+    async def s_inn(self, it):
+        embed = discord.Embed(
+            title="🏠 宿屋", 
+            description=f"部屋を借りる\n※ロール「{FREE_INN_ROLE_NAME}」をお持ちの方は「宿」が無料になります。", 
+            color=discord.Color.gold()
+        )
+        await it.channel.send(embed=embed, view=RoomView())
+        await it.response.send_message("設置完了", ephemeral=True)
 
     @app_commands.command(name="パネル設置_カスタムvc", description="カスタムVCパネルを送信")
     @is_admin()
     async def s_cvc(self, it): await it.channel.send(embed=discord.Embed(title="✨ カスタムVC", description="自分だけの部屋を作成", color=discord.Color.purple()), view=CustomRoomView()); await it.response.send_message("設置完了", ephemeral=True)
+
+    @app_commands.command(name="パネル設置_スタンプ依頼", description="スタンプ依頼パネルを送信")
+    async def s_emblem(self, it):
+        user_roles = [r.name for r in it.user.roles]
+        is_manager = EMBLEM_MANAGER_ROLE_NAME in user_roles
+        if not is_manager and not has_admin_role(it.user) and not it.user.guild_permissions.administrator:
+            return await it.response.send_message("権限がありません（統括または運営専用です）。", ephemeral=True)
+        
+        embed = discord.Embed(
+            title="🎨 スタンプ制作 依頼所",
+            description=(
+                "こちらから紋章師の方々へスタンプの制作を依頼できます！\n\n"
+                "**【依頼方法】**\n"
+                "1. 下の「スタンプを依頼する」ボタンを押す\n"
+                "2. 制作を依頼したい担当者を選択する\n"
+                "3. 依頼内容の詳細を記入して送信\n\n"
+                "※依頼送信後、担当者から連絡があるまでお待ちください。"
+            ),
+            color=discord.Color.blue()
+        )
+        await it.channel.send(embed=embed, view=EmblemRequestPanelView())
+        await it.response.send_message("設置完了", ephemeral=True)
 
 class InterviewerGroup(app_commands.Group):
     def __init__(self): super().__init__(name="面接官", description="【面接官専用】手続きコマンド")
