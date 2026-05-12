@@ -458,9 +458,20 @@ class EmblemRequestModal(discord.ui.Modal, title='スタンプ制作依頼'):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         
-        # チケット番号の決定 (既存のticket-チャンネルを数える)
-        ticket_channels = [c for c in guild.channels if c.name.startswith("ticket-")]
-        ticket_num = len(ticket_channels) + 1
+        # チケット番号の決定 (空いている最小の番号を探す)
+        current_ticket_nums = []
+        for c in guild.channels:
+            if c.name.startswith("ticket-"):
+                try:
+                    num = int(c.name.split("-")[1])
+                    current_ticket_nums.append(num)
+                except:
+                    pass
+        
+        ticket_num = 1
+        while ticket_num in current_ticket_nums:
+            ticket_num += 1
+            
         channel_name = f"ticket-{ticket_num:03d}"
         
         # 権限設定
