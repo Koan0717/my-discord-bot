@@ -171,95 +171,95 @@ async def on_message(message):
 
 @bot.event
 async def on_voice_state_update(member, before, after):
-    if member.bot:
-        return
+    try:
+        if member.bot: return
+        user_id = member.id
+        now = datetime.datetime.now(JST)
 
-    user_id = member.id
-    now = datetime.datetime.now(JST)
-
-    # VCに参加・移動した時
-    if after.channel is not None:
-        if before.channel is None or before.channel != after.channel:
-            bot.vc_sessions[user_id] = now
-        
-        # --- 自動VC作成ロジック ---
-        if after.channel.id == CREATE_VC_CHANNEL_ID:
-            try:
-                # 既に一時部屋を持っているかチェック
-                async with database.pool.acquire() as conn:
-                    existing_room = await conn.fetchrow('SELECT channel_id FROM rooms WHERE owner_id = $1 AND room_type = $2', member.id, "一時部屋")
-                
-                if existing_room:
-                    # 既に部屋がある場合、その部屋に移動させる（存在確認含む）
-                    existing_channel = bot.get_channel(existing_room["channel_id"])
-                    if existing_channel:
-                        print(f"Moving {member.display_name} to existing Auto-VC {existing_channel.id}")
-                        await asyncio.sleep(0.5)
-                        try:
-                            await member.move_to(existing_channel)
-                        except:
-                            pass
-                        return # 終了
-                    else:
-                        # データベースにはあるがチャンネルがない場合は不整合なので削除して新規作成へ
-                        await database.remove_room(existing_room["channel_id"])
-
-                guild = member.guild
-                category = after.channel.category
-                channel_name = f"🔊│{member.display_name}の部屋"
-                
-                # チャンネル作成
-                new_channel = await guild.create_voice_channel(
-                    name=channel_name,
-                    category=category,
-                    reason=f"Auto-VC created for {member.display_name}"
-                )
-                
-                # データベースに一時部屋として登録
-                far_future = now + datetime.timedelta(days=36500)
-                await database.add_room(new_channel.id, member.id, "一時部屋", far_future)
-                
-                # ユーザーを移動 (少し待機してから移動させるのが安定します)
-                await asyncio.sleep(1)
+        # VCに参加・移動した時
+        if after.channel is not None:
+            if before.channel is None or before.channel != after.channel:
+                bot.vc_sessions[user_id] = now
+            
+            # --- 自動VC作成ロジック ---
+            if after.channel.id == CREATE_VC_CHANNEL_ID:
                 try:
-                    await member.move_to(new_channel)
-                except Exception as move_e:
-                    print(f"Failed to move member to Auto-VC: {move_e}")
-            except Exception as e:
-                print(f"Error in Auto-VC creation flow: {e}")
-        # ------------------------
+                    pool = await database.get_pool()
+                    async with pool.acquire() as conn:
+                        existing_room = await conn.fetchrow('SELECT channel_id FROM rooms WHERE owner_id = $1 AND room_type = $2', member.id, "一時部屋")
+                    
+                    if existing_room:
+                        existing_channel = bot.get_channel(existing_room["channel_id"])
+                        if not existing_channel:
+                            try: existing_channel = await bot.fetch_channel(existing_room["channel_id"])
+                            except: pass
+                        
+                        if existing_channel:
+                            print(f"[Auto-VC] Moving {member.display_name} to existing room {existing_channel.id}")
+                            await asyncio.sleep(1)
+                            if member.voice and member.voice.channel and member.voice.channel.id == CREATE_VC_CHANNEL_ID:
+                                await member.move_to(existing_channel)
+                            return
+                        else:
+                            await database.remove_room(existing_room["channel_id"])
 
-        # カスタムVCへの入室であれば、無人タイマーを解除
-        bot.empty_custom_vcs.pop(after.channel.id, None)
-    
-    # VCから退出・移動した時
-    if before.channel is not None and (after.channel is None or before.channel != after.channel):
-        join_time = bot.vc_sessions.pop(user_id, None)
-        if join_time:
-            duration_minutes = int((now - join_time).total_seconds() / 60)
-            if duration_minutes > 0:
-                # VC経験値の加算
-                xp_reward = duration_minutes * VC_XP_PER_MIN
-                new_lv = await database.add_xp(user_id, xp_reward, "vc")
-                if new_lv:
-                    lv_channel = bot.get_channel(LEVEL_UP_CHANNEL_ID)
-                    if lv_channel:
-                        await lv_channel.send(f"🎊 {member.mention} が **VCレベルアップ！** (Lv.{new_lv-1} ➔ **{new_lv}**)")
+                    guild = member.guild
+                    category = after.channel.category
+                    
+                    # 権限確認
+                    perms = category.permissions_for(guild.me) if category else guild.me.guild_permissions
+                    if not perms.manage_channels or not perms.move_members:
+                        print(f"[Auto-VC] Missing permissions: manage_channels={perms.manage_channels}, move_members={perms.move_members}")
+                    
+                    channel_name = f"🔊│{member.display_name}の部屋"
+                    new_channel = await guild.create_voice_channel(
+                        name=channel_name,
+                        category=category,
+                        reason=f"Auto-VC for {member.display_name}"
+                    )
+                    
+                    far_future = now + datetime.timedelta(days=36500)
+                    await database.add_room(new_channel.id, member.id, "一時部屋", far_future)
+                    
+                    print(f"[Auto-VC] Created {new_channel.name}, moving {member.display_name}")
+                    await asyncio.sleep(1.5) # 安定のため少し長めに待機
+                    if member.voice and member.voice.channel and member.voice.channel.id == CREATE_VC_CHANNEL_ID:
+                        await member.move_to(new_channel)
+                except Exception as e:
+                    print(f"[Auto-VC] Error in creation: {e}")
+            # ------------------------
+
+            # カスタムVCへの入室であれば、無人タイマーを解除
+            bot.empty_custom_vcs.pop(after.channel.id, None)
         
-        # 退出した部屋が無人になった場合
-        if len(before.channel.members) == 0:
-            room_data = await database.get_room(before.channel.id)
-            if room_data:
-                if room_data["room_type"] == "一時部屋":
-                    # 一時部屋は無人になったら即座に削除
-                    try:
-                        print(f"Deleting empty Auto-VC: {before.channel.name} ({before.channel.id})")
-                        await before.channel.delete()
-                        await database.remove_room(before.channel.id)
-                    except Exception as del_e:
-                        print(f"Failed to delete Auto-VC: {del_e}")
-                elif room_data["room_type"] == "カスタムVC":
-                    bot.empty_custom_vcs[before.channel.id] = now
+        # VCから退出・移動した時
+        if before.channel is not None and (after.channel is None or before.channel != after.channel):
+            join_time = bot.vc_sessions.pop(user_id, None)
+            if join_time:
+                duration_minutes = int((now - join_time).total_seconds() / 60)
+                if duration_minutes > 0:
+                    xp_reward = duration_minutes * VC_XP_PER_MIN
+                    new_lv = await database.add_xp(user_id, xp_reward, "vc")
+                    if new_lv:
+                        lv_channel = bot.get_channel(LEVEL_UP_CHANNEL_ID)
+                        if lv_channel:
+                            await lv_channel.send(f"🎊 {member.mention} が **VCレベルアップ！** (Lv.{new_lv-1} ➔ **{new_lv}**)")
+            
+            # 退出した部屋が無人になった場合
+            if len(before.channel.members) == 0:
+                room_data = await database.get_room(before.channel.id)
+                if room_data:
+                    if room_data["room_type"] == "一時部屋":
+                        try:
+                            print(f"[Auto-VC] Deleting empty room: {before.channel.name}")
+                            await before.channel.delete()
+                            await database.remove_room(before.channel.id)
+                        except Exception as del_e:
+                            print(f"[Auto-VC] Delete error: {del_e}")
+                    elif room_data["room_type"] == "カスタムVC":
+                        bot.empty_custom_vcs[before.channel.id] = now
+    except Exception as global_e:
+        print(f"CRITICAL ERROR in on_voice_state_update: {global_e}")
 
 @bot.event
 async def on_guild_channel_delete(channel):
