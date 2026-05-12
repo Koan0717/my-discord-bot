@@ -14,9 +14,11 @@ pool = None
 async def get_pool():
     global pool
     if pool is None:
-        # pgbouncer (Pooler) を使っているため、statement_cache_size=0 を設定
         pool = await asyncpg.create_pool(DATABASE_URL, statement_cache_size=0, min_size=1, max_size=10)
     return pool
+
+def get_now_naive():
+    return datetime.datetime.now(JST).replace(tzinfo=None)
 
 async def setup_db():
     p = await get_pool()
@@ -145,15 +147,16 @@ async def remove_room(channel_id: int):
         await conn.execute('DELETE FROM rooms WHERE channel_id = $1', channel_id)
 
 async def extend_room(channel_id: int, new_expire_at: datetime.datetime):
+    if new_expire_at.tzinfo:
+        new_expire_at = new_expire_at.replace(tzinfo=None)
     p = await get_pool()
     async with p.acquire() as conn:
         await conn.execute('UPDATE rooms SET expire_at = $1 WHERE channel_id = $2', new_expire_at, channel_id)
 
 async def get_expired_rooms():
-    now = datetime.datetime.now(JST)
     p = await get_pool()
     async with p.acquire() as conn:
-        rows = await conn.fetch('SELECT channel_id FROM rooms WHERE expire_at <= $1', now)
+        rows = await conn.fetch('SELECT channel_id FROM rooms WHERE expire_at <= $1', get_now_naive())
         return [row['channel_id'] for row in rows]
 
 # --- 管理用リセット関数 ---

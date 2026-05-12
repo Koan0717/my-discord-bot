@@ -220,8 +220,8 @@ async def on_voice_state_update(member, before, after):
                         reason=f"Auto-VC for {member.display_name}"
                     )
                     
-                    # 確実にDBに保存されるのを待つ
-                    far_future = now + datetime.timedelta(days=36500)
+                    # 確実にDBに保存されるのを待つ (TIMESTAMP型に合わせてtimezone情報を抜く)
+                    far_future = (now + datetime.timedelta(days=36500)).replace(tzinfo=None)
                     await database.add_room(new_channel.id, member.id, "一時部屋", far_future)
                     print(f"[Auto-VC] Created room {new_channel.id} and registered in DB")
                     
@@ -646,7 +646,7 @@ async def process_room_purchase(interaction: discord.Interaction, room_type: str
                            interaction.user: discord.PermissionOverwrite(manage_channels=True, move_members=True) }
             if room_type == "高級宿": overwrites[interaction.user].manage_permissions = True
             channel = await interaction.guild.create_voice_channel(name=f"{room_type}-{interaction.user.display_name}", category=interaction.channel.category, overwrites=overwrites, user_limit=(2 if room_type=="宿" else 0))
-            expire_at = datetime.datetime.now(JST) + datetime.timedelta(hours=duration)
+            expire_at = (datetime.datetime.now(JST) + datetime.timedelta(hours=duration)).replace(tzinfo=None)
             await database.add_room(channel.id, owner_id, room_type, expire_at)
             await interaction.edit_original_response(content=f"✅ {channel.mention} を作成しました！", view=None)
             view = CustomRoomControlView() if room_type=="カスタムVC" else (RoomControlView() if room_type=="高級宿" else InnControlView())
