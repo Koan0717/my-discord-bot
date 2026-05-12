@@ -239,7 +239,10 @@ async def on_voice_state_update(member, before, after):
                             print(f"[Auto-VC] User already left the trigger channel.")
                             break
                 except Exception as e:
-                    print(f"[Auto-VC] Error in creation: {e}")
+                    err_msg = f"❌ [Auto-VC作成エラー]\n作成者: {member.display_name}\nエラー内容: {e}"
+                    print(err_msg)
+                    try: await after.channel.send(err_msg)
+                    except: pass
             # ------------------------
 
             # カスタムVCへの入室であれば、無人タイマーを解除
@@ -896,6 +899,23 @@ class AdminGroup(app_commands.Group):
             txt += f"- CH ID: {r['channel_id']} | 所有者ID: {r['owner_id']} | {status}\n"
         
         await it.response.send_message(txt[:2000], ephemeral=True)
+
+    @app_commands.command(name="sql_実行", description="【管理者専用】SQLを直接実行します（デバッグ用）")
+    @is_admin()
+    async def sql_exec(self, it, query: str):
+        try:
+            pool = await database.get_pool()
+            async with pool.acquire() as conn:
+                if query.strip().lower().startswith("select"):
+                    rows = await conn.fetch(query)
+                    if not rows: return await it.response.send_message("結果は空です。", ephemeral=True)
+                    txt = "【実行結果】\n" + "\n".join([str(dict(r)) for r in rows])
+                    await it.response.send_message(txt[:2000], ephemeral=True)
+                else:
+                    res = await conn.execute(query)
+                    await it.response.send_message(f"実行完了: {res}", ephemeral=True)
+        except Exception as e:
+            await it.response.send_message(f"SQLエラー: {e}", ephemeral=True)
 
 class InterviewerGroup(app_commands.Group):
     def __init__(self): super().__init__(name="面接官", description="【面接官専用】手続きコマンド")
