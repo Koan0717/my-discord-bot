@@ -22,6 +22,7 @@ TC_XP_REWARD = 10      # メッセージ1通あたりのXP
 TC_XP_COOLDOWN = 10    # TC XP獲得のクールダウン（秒）
 VC_XP_PER_MIN = 15     # VC滞在1分あたりのXP
 LEVEL_UP_CHANNEL_ID = 1503480861105066024
+RANKING_CATEGORY_NAME = "黄昏の森"  # ランク機能が有効なカテゴリー
 
 # 部屋作成の設定
 ROOM_SETTINGS = {
@@ -128,20 +129,29 @@ class EconomyBot(commands.Bot):
                     member = m
                     break
             
-            if member:
-                elapsed_minutes = int((now - last_reward_time).total_seconds() / 60)
-                if elapsed_minutes >= 1:
-                    xp_reward = elapsed_minutes * VC_XP_PER_MIN
+                if member:
+                    # カテゴリーとロールのチェック
+                    in_correct_category = member.voice.channel and member.voice.channel.category and member.voice.channel.category.name == RANKING_CATEGORY_NAME
+                    has_human_role = discord.utils.get(member.roles, name=NEW_MEMBER_ROLE_NAME) is not None
                     
-                    new_lv = await database.add_xp(user_id, xp_reward, "vc")
-                    
-                    # 更新
-                    self.vc_sessions[user_id] = now
-                    
-                    if new_lv:
-                        lv_channel = self.get_channel(LEVEL_UP_CHANNEL_ID)
-                        if lv_channel:
-                            await lv_channel.send(f"🎊 {member.mention} が **VCレベルアップ！** (Lv.{new_lv-1} ➔ **{new_lv}**)")
+                    if not (in_correct_category and has_human_role):
+                        # 条件を満たしていない場合はセッションを終了（XP付与なしで破棄）
+                        self.vc_sessions.pop(user_id, None)
+                        continue
+
+                    elapsed_minutes = int((now - last_reward_time).total_seconds() / 60)
+                    if elapsed_minutes >= 1:
+                        xp_reward = elapsed_minutes * VC_XP_PER_MIN
+                        
+                        new_lv = await database.add_xp(user_id, xp_reward, "vc")
+                        
+                        # 更新
+                        self.vc_sessions[user_id] = now
+                        
+                        if new_lv:
+                            lv_channel = self.get_channel(LEVEL_UP_CHANNEL_ID)
+                            if lv_channel:
+                                await lv_channel.send(f"🎊 {member.mention} が **VCレベルアップ！** (Lv.{new_lv-1} ➔ **{new_lv}**)")
             else:
                 # ユーザーがどのVCにもいない、またはオフライン
                 self.vc_sessions.pop(user_id, None)
@@ -158,15 +168,20 @@ async def on_message(message):
     now = datetime.datetime.now(JST)
 
     # 1. 通貨報酬の判定 (廃止済み)
-    # 2. TC経験値の判定 (クールダウンを短く設定)
-    last_xp_time = bot.tc_xp_cooldowns.get(user_id)
-    if not last_xp_time or (now - last_xp_time).total_seconds() > TC_XP_COOLDOWN:
-        new_lv = await database.add_xp(user_id, TC_XP_REWARD, "tc")
-        bot.tc_xp_cooldowns[user_id] = now
-        if new_lv:
-            lv_channel = bot.get_channel(LEVEL_UP_CHANNEL_ID)
-            if lv_channel:
-                await lv_channel.send(f"🎊 {message.author.mention} が **TCレベルアップ！** (Lv.{new_lv-1} ➔ **{new_lv}**)")
+    # 2. TC経験値の判定
+    # カテゴリーとロールのチェック
+    in_correct_category = message.channel.category and message.channel.category.name == RANKING_CATEGORY_NAME
+    has_human_role = discord.utils.get(message.author.roles, name=NEW_MEMBER_ROLE_NAME) is not None
+
+    if in_correct_category and has_human_role:
+        last_xp_time = bot.tc_xp_cooldowns.get(user_id)
+        if not last_xp_time or (now - last_xp_time).total_seconds() > TC_XP_COOLDOWN:
+            new_lv = await database.add_xp(user_id, TC_XP_REWARD, "tc")
+            bot.tc_xp_cooldowns[user_id] = now
+            if new_lv:
+                lv_channel = bot.get_channel(LEVEL_UP_CHANNEL_ID)
+                if lv_channel:
+                    await lv_channel.send(f"🎊 {message.author.mention} が **TCレベルアップ！** (Lv.{new_lv-1} ➔ **{new_lv}**)")
     
     await bot.process_commands(message)
 
@@ -181,7 +196,12 @@ async def on_voice_state_update(member, before, after):
         if after.channel is not None:
             is_join = before.channel is None or before.channel.id != after.channel.id
             if is_join:
-                bot.vc_sessions[user_id] = now_aware
+                # カテゴリーとロールのチェックを満たす場合のみセッション開始
+                in_correct_category = after.channel.category and after.channel.category.name == RANKING_CATEGORY_NAME
+                has_human_role = discord.utils.get(member.roles, name=NEW_MEMBER_ROLE_NAME) is not None
+                
+                if in_correct_category and has_human_role:
+                    bot.vc_sessions[user_id] = now_aware
             
             if after.channel.id == CREATE_VC_CHANNEL_ID:
                 try:
@@ -851,6 +871,15 @@ class SlotView(discord.ui.View):
 class AdminGroup(app_commands.Group):
     def __init__(self): super().__init__(name="管理者", description="【管理者専用】管理コマンド")
     
+    @app_commands.command(name="ランク全リセット", description="【注意】全ユーザーのランク（XP・レベル）を初期化します")
+    @is_admin()
+    async def reset_all_ranks(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        p = await database.get_pool()
+        async with p.acquire() as conn:
+            await conn.execute('UPDATE users SET tc_xp = 0, tc_level = 1, vc_xp = 0, vc_level = 1')
+        await interaction.followup.send("✅ 全ユーザーのランクをリセットしました。", ephemeral=True)
+
     @app_commands.command(name="通貨付与", description="指定ユーザーに通貨を付与")
     @is_admin()
     async def give(self, it, target: discord.Member, amount: int):
