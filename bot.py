@@ -866,19 +866,28 @@ class SlotView(discord.ui.View):
     @discord.ui.button(label="🎰 スロットで遊ぶ", style=discord.ButtonStyle.primary, custom_id="persistent_slot_btn")
     async def play(self, it, btn): await it.response.send_modal(SlotBetModal())
 
-# --- コマンドグループ ---
-
 class AdminGroup(app_commands.Group):
     def __init__(self): super().__init__(name="管理者", description="【管理者専用】管理コマンド")
-    
-    @app_commands.command(name="ランク全リセット", description="【注意】全ユーザーのランク（XP・レベル）を初期化します")
+
+    @app_commands.command(name="ランクリセット", description="ランクを初期化します")
     @is_admin()
-    async def reset_all_ranks(self, interaction: discord.Interaction):
+    @app_commands.describe(user="リセットする特定のユーザー", all_players="サーバー全員をリセットする場合は『はい』を選択")
+    async def rank_reset(self, interaction: discord.Interaction, user: discord.Member = None, all_players: bool = False):
         await interaction.response.defer(ephemeral=True)
-        p = await database.get_pool()
-        async with p.acquire() as conn:
-            await conn.execute('UPDATE users SET tc_xp = 0, tc_level = 1, vc_xp = 0, vc_level = 1')
-        await interaction.followup.send("✅ 全ユーザーのランクをリセットしました。", ephemeral=True)
+        
+        if all_players:
+            # 全ユーザーのリセット
+            p = await database.get_pool()
+            async with p.acquire() as conn:
+                await conn.execute('UPDATE users SET tc_xp = 0, tc_level = 1, vc_xp = 0, vc_level = 1')
+            await interaction.followup.send("✅ 全ユーザーのランクをリセットしました。", ephemeral=True)
+        elif user:
+            # 特定ユーザーのリセット
+            await database.reset_user_rank(user.id)
+            await interaction.followup.send(f"✅ {user.mention} のランクをリセットしました。", ephemeral=True)
+        else:
+            # 何も指定されていない場合
+            await interaction.followup.send("❌ エラー: ユーザーを指定するか、『全プレイヤー』に『はい』を選択してください。", ephemeral=True)
 
     @app_commands.command(name="通貨付与", description="指定ユーザーに通貨を付与")
     @is_admin()
@@ -891,11 +900,6 @@ class AdminGroup(app_commands.Group):
     async def remove(self, it, target: discord.Member, amount: int):
         await database.remove_balance(target.id, amount)
         await it.response.send_message(f"✅ {target.mention} から {amount} {CURRENCY_NAME} 没収しました。")
-
-    @app_commands.command(name="ランク点リセット", description="ランク情報の初期化")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def rrank(self, it, user: discord.Member):
-        await database.reset_user_rank(user.id); await it.response.send_message("リセット完了", ephemeral=True)
 
     @app_commands.command(name="所持金リセット", description="所持金の初期化")
     @app_commands.checks.has_permissions(administrator=True)
