@@ -130,8 +130,9 @@ class EconomyBot(commands.Bot):
                     break
             
             if member:
-                # カテゴリーのチェックのみ行う
-                in_correct_category = member.voice.channel and member.voice.channel.category and member.voice.channel.category.name == RANKING_CATEGORY_NAME
+                # カテゴリーのチェック (部分一致に変更)
+                category_name = member.voice.channel.category.name if member.voice.channel and member.voice.channel.category else ""
+                in_correct_category = RANKING_CATEGORY_NAME in category_name
                 
                 if not in_correct_category:
                     # 条件を満たしていない場合はセッションを終了
@@ -141,7 +142,7 @@ class EconomyBot(commands.Bot):
                 elapsed_minutes = int((now - last_reward_time).total_seconds() / 60)
                 if elapsed_minutes >= 1:
                     xp_reward = elapsed_minutes * VC_XP_PER_MIN
-                    
+                    print(f"[VC XP] Awarding {xp_reward} XP to {member.display_name}")
                     new_lv = await database.add_xp(user_id, xp_reward, "vc")
                     
                     # 更新
@@ -168,12 +169,14 @@ async def on_message(message):
 
     # 1. 通貨報酬の判定 (廃止済み)
     # 2. TC経験値の判定
-    # カテゴリーのチェックのみ行う
-    in_correct_category = message.channel.category and message.channel.category.name == RANKING_CATEGORY_NAME
+    # カテゴリーのチェック (部分一致に変更)
+    category_name = message.channel.category.name if message.channel.category else ""
+    in_correct_category = RANKING_CATEGORY_NAME in category_name
 
     if in_correct_category:
         last_xp_time = bot.tc_xp_cooldowns.get(user_id)
         if not last_xp_time or (now - last_xp_time).total_seconds() > TC_XP_COOLDOWN:
+            print(f"[TC XP] Awarding {TC_XP_REWARD} XP to {message.author.display_name}")
             new_lv = await database.add_xp(user_id, TC_XP_REWARD, "tc")
             bot.tc_xp_cooldowns[user_id] = now
             if new_lv:
@@ -195,9 +198,11 @@ async def on_voice_state_update(member, before, after):
             is_join = before.channel is None or before.channel.id != after.channel.id
             if is_join:
                 # カテゴリーのチェックを満たす場合のみセッション開始
-                in_correct_category = after.channel.category and after.channel.category.name == RANKING_CATEGORY_NAME
+                category_name = after.channel.category.name if after.channel.category else ""
+                in_correct_category = RANKING_CATEGORY_NAME in category_name
                 
                 if in_correct_category:
+                    print(f"[VC XP] Started session for {member.display_name}")
                     bot.vc_sessions[user_id] = now_aware
             
             if after.channel.id == CREATE_VC_CHANNEL_ID:
