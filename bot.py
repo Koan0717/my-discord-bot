@@ -374,7 +374,7 @@ async def rank(interaction: discord.Interaction, user: discord.Member = None):
     try:
         await interaction.response.defer()
     except:
-        return # すでに期限切れの場合は何もしない
+        return
 
     try:
         target_user = user or interaction.user
@@ -386,12 +386,18 @@ async def rank(interaction: discord.Interaction, user: discord.Member = None):
         vc_next = database.get_next_level_xp(vc_lv)
 
         def create_progress_bar(current, total, length=12):
-            # 0除算防止
             if total <= 0: total = 100
             pct = min(current / total, 1.0)
             filled = int(pct * length)
             bar = "▰" * filled + "▱" * (length - filled)
             return f"{bar}  **{int(pct*100)}%**"
+
+        # あとどれくらいでレベルアップするか
+        tc_needed = tc_next - tc_xp
+        tc_est_msgs = -(-tc_needed // TC_XP_REWARD) # 切り上げ計算
+        
+        vc_needed = vc_next - vc_xp
+        vc_est_mins = -(-vc_needed // VC_XP_PER_MIN) # 切り上げ計算
 
         embed = discord.Embed(
             title=f"✨ {target_user.display_name} のステータス",
@@ -406,7 +412,8 @@ async def rank(interaction: discord.Interaction, user: discord.Member = None):
             f"**Level:** `{tc_lv}`\n"
             f"**Next:** `{tc_xp}` / `{tc_next}` XP\n"
             f"{create_progress_bar(tc_xp, tc_next)}\n"
-            f"┗ あと **{tc_next - tc_xp}** XP でレベルアップ"
+            f"┗ 次のレベルまであと **{tc_needed}** XP\n"
+            f"┗ 目安: あと **約{tc_est_msgs}通** のチャット"
         )
         embed.add_field(name="💬 テキスト活動 (TC)", value=tc_value, inline=False)
 
@@ -415,7 +422,8 @@ async def rank(interaction: discord.Interaction, user: discord.Member = None):
             f"**Level:** `{vc_lv}`\n"
             f"**Next:** `{vc_xp}` / `{vc_next}` XP\n"
             f"{create_progress_bar(vc_xp, vc_next)}\n"
-            f"┗ あと **{vc_next - vc_xp}** XP でレベルアップ"
+            f"┗ 次のレベルまであと **{vc_needed}** XP\n"
+            f"┗ 目安: あと **約{vc_est_mins}分** の滞在"
         )
         embed.add_field(name="🎙️ ボイス活動 (VC)", value=vc_value, inline=False)
 
