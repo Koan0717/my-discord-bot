@@ -130,9 +130,9 @@ class EconomyBot(commands.Bot):
                     break
             
             if member:
-                # カテゴリーのチェック (部分一致に変更)
-                category_name = member.voice.channel.category.name if member.voice.channel and member.voice.channel.category else ""
-                in_correct_category = RANKING_CATEGORY_NAME in category_name
+                # カテゴリーのチェック (部分一致・大文字小文字無視)
+                category_name = member.voice.channel.category.name if member.voice.channel and member.voice.channel.category else "なし"
+                in_correct_category = RANKING_CATEGORY_NAME.lower() in category_name.lower()
                 
                 if not in_correct_category:
                     # 条件を満たしていない場合はセッションを終了
@@ -142,7 +142,7 @@ class EconomyBot(commands.Bot):
                 elapsed_minutes = int((now - last_reward_time).total_seconds() / 60)
                 if elapsed_minutes >= 1:
                     xp_reward = elapsed_minutes * VC_XP_PER_MIN
-                    print(f"[VC XP] Awarding {xp_reward} XP to {member.display_name}")
+                    print(f"[DEBUG] VC XP Awarding: {member.display_name} in {category_name}")
                     new_lv = await database.add_xp(user_id, xp_reward, "vc")
                     
                     # 更新
@@ -169,14 +169,14 @@ async def on_message(message):
 
     # 1. 通貨報酬の判定 (廃止済み)
     # 2. TC経験値の判定
-    # カテゴリーのチェック (部分一致に変更)
-    category_name = message.channel.category.name if message.channel.category else ""
-    in_correct_category = RANKING_CATEGORY_NAME in category_name
+    # カテゴリーのチェック (部分一致・大文字小文字無視)
+    category_name = message.channel.category.name if message.channel.category else "なし"
+    in_correct_category = RANKING_CATEGORY_NAME.lower() in category_name.lower()
 
     if in_correct_category:
         last_xp_time = bot.tc_xp_cooldowns.get(user_id)
         if not last_xp_time or (now - last_xp_time).total_seconds() > TC_XP_COOLDOWN:
-            print(f"[TC XP] Awarding {TC_XP_REWARD} XP to {message.author.display_name}")
+            print(f"[DEBUG] TC XP Awarding: {message.author.display_name} in {category_name}")
             new_lv = await database.add_xp(user_id, TC_XP_REWARD, "tc")
             bot.tc_xp_cooldowns[user_id] = now
             if new_lv:
@@ -370,7 +370,12 @@ async def pay(interaction: discord.Interaction, target: discord.Member, amount: 
 
 @bot.tree.command(name="rank", description="自分または他ユーザーのランク（レベル）を表示します")
 async def rank(interaction: discord.Interaction, user: discord.Member = None):
-    await interaction.response.defer() # タイムアウト防止
+    # defer() の前に重い処理を一切入れない
+    try:
+        await interaction.response.defer()
+    except:
+        return # すでに期限切れの場合は何もしない
+
     try:
         target_user = user or interaction.user
         user_data = await database.get_user(target_user.id)
@@ -381,6 +386,8 @@ async def rank(interaction: discord.Interaction, user: discord.Member = None):
         vc_next = database.get_next_level_xp(vc_lv)
 
         def create_progress_bar(current, total, length=12):
+            # 0除算防止
+            if total <= 0: total = 100
             pct = min(current / total, 1.0)
             filled = int(pct * length)
             bar = "▰" * filled + "▱" * (length - filled)
@@ -392,9 +399,7 @@ async def rank(interaction: discord.Interaction, user: discord.Member = None):
             color=0x2f3136
         )
         
-        # アバターの取得をより安全に
-        avatar_url = target_user.display_avatar.url
-        embed.set_thumbnail(url=avatar_url)
+        embed.set_thumbnail(url=target_user.display_avatar.url)
 
         # TCランク
         tc_value = (
@@ -414,14 +419,16 @@ async def rank(interaction: discord.Interaction, user: discord.Member = None):
         )
         embed.add_field(name="🎙️ ボイス活動 (VC)", value=vc_value, inline=False)
 
-        # フッターの設定
         embed.set_footer(text=f"Requested by {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
         embed.timestamp = datetime.datetime.now(JST)
 
         await interaction.followup.send(embed=embed)
     except Exception as e:
-        print(f"Error in rank command: {e}")
-        await interaction.followup.send(f"❌ エラーが発生しました: `{e}`", ephemeral=True)
+        print(f"[ERROR] rank command: {e}")
+        try:
+            await interaction.followup.send(f"❌ エラーが発生しました: `{e}`", ephemeral=True)
+        except:
+            pass
 
 # --- VCコントロールパネル系 ---
 
