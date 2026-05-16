@@ -75,6 +75,7 @@ class EconomyBot(commands.Bot):
         # グループの登録
         self.tree.add_command(AdminGroup())
         self.tree.add_command(InterviewerGroup())
+        self.tree.add_command(EvaluationGroup())
         
         await self.tree.sync()
         self.check_expired_rooms.start()
@@ -319,8 +320,25 @@ async def on_guild_channel_delete(channel):
         await database.remove_room(channel.id)
         bot.empty_custom_vcs.pop(channel.id, None)
 
+@bot.event
+async def on_member_update(before, after):
+    human_role = discord.utils.get(after.guild.roles, name=NEW_MEMBER_ROLE_NAME)
+    if human_role and human_role in after.roles and human_role not in before.roles:
+        existing = await database.get_evaluation_period(after.id)
+        if not existing:
+            now = datetime.datetime.now(JST)
+            if 23 <= now.hour <= 23:
+                start_time = (now + datetime.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            else:
+                start_time = now + datetime.timedelta(minutes=5)
+            
+            end_time = start_time + datetime.timedelta(days=14)
+            await database.add_evaluation_period(after.id, start_time, end_time)
+            print(f"[Evaluation] Started for {after.display_name}: {start_time} to {end_time}")
+
 # --- 運営権限チェック ---
 ADMIN_ROLE_NAMES = ["大魔王", "黒棺秘書官", "機巧墓守"]
+EVALUATOR_ROLE_NAMES = ["最高観測官", "深淵観測官"]
 
 def is_admin():
     async def predicate(interaction: discord.Interaction):
@@ -335,6 +353,10 @@ def is_admin():
 
 def has_admin_role(user: discord.Member):
     return any(role.name in ADMIN_ROLE_NAMES for role in user.roles)
+
+def has_evaluator_role(user: discord.Member):
+    user_roles = [role.name for role in user.roles]
+    return any(r in EVALUATOR_ROLE_NAMES or r in ADMIN_ROLE_NAMES for r in user_roles)
 
 # --- 一般スラッシュコマンド ---
 
@@ -1054,6 +1076,64 @@ class InterviewerGroup(app_commands.Group):
             return await it.response.send_message("権限がありません。", ephemeral=True)
         await it.channel.send(embed=discord.Embed(title="✨ 入界手続き", description="下のボタンから登録してください。", color=discord.Color.green()), view=InterviewPanelView())
         await it.response.send_message("設置完了", ephemeral=True)
+
+class EvaluationGroup(app_commands.Group):
+    def __init__(self): super().__init__(name="評価期間", description="評価期間関連コマンド")
+
+    @app_commands.command(name="一覧", description="【運営・評価員専用】評価期間中のユーザー一覧を表示")
+    async def list_periods(self, interaction: discord.Interaction):
+        if not has_evaluator_role(interaction.user) and not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("権限がありません。", ephemeral=True)
+            
+        periods = await database.get_all_evaluation_periods()
+        if not periods:
+            return await interaction.response.send_message("現在評価期間中のユーザーはいません。", ephemeral=True)
+            
+        embed = discord.Embed(title="📋 評価期間中ユーザー一覧", color=discord.Color.blue())
+        for p in periods:
+            member = interaction.guild.get_member(p['user_id'])
+            name = member.display_name if member else f"ID: {p['user_id']}"
+            end_t = int(p['end_time'].timestamp())
+            embed.add_field(name=name, value=f"終了予定: <t:{end_t}:F> (<t:{end_t}:R>)", inline=False)
+            
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="確認", description="ユーザーの評価期間を確認します")
+    async def check_period(self, interaction: discord.Interaction, user: discord.Member = None):
+        target = user or interaction.user
+        
+        if target.id != interaction.user.id:
+            if not has_evaluator_role(interaction.user) and not interaction.user.guild_permissions.administrator:
+                return await interaction.response.send_message("他人の評価期間を見る権限がありません。", ephemeral=True)
+                
+        period = await database.get_evaluation_period(target.id)
+        if not period:
+            return await interaction.response.send_message(f"{target.display_name} は評価期間中ではありません。", ephemeral=True)
+            
+        start_t = int(period['start_time'].timestamp())
+        end_t = int(period['end_time'].timestamp())
+        
+        embed = discord.Embed(title=f"⏳ {target.display_name} の評価期間", color=discord.Color.green())
+        embed.add_field(name="開始時刻", value=f"<t:{start_t}:F>", inline=False)
+        embed.add_field(name="終了予定", value=f"<t:{end_t}:F> (<t:{end_t}:R>)", inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="延長", description="【運営・評価員専用】ユーザーの評価期間を延長します")
+    @app_commands.describe(user="延長するユーザー", extra_days="延長する日数")
+    async def extend_period(self, interaction: discord.Interaction, user: discord.Member, extra_days: int):
+        if not has_evaluator_role(interaction.user) and not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("権限がありません。", ephemeral=True)
+            
+        if extra_days <= 0:
+            return await interaction.response.send_message("1以上の延長日数を指定してください。", ephemeral=True)
+            
+        success = await database.extend_evaluation_period(user.id, extra_days)
+        if not success:
+            return await interaction.response.send_message(f"{user.display_name} は評価期間中ではありません。", ephemeral=True)
+            
+        period = await database.get_evaluation_period(user.id)
+        end_t = int(period['end_time'].timestamp())
+        await interaction.response.send_message(f"✅ {user.mention} の評価期間を {extra_days} 日延長しました。\n新しい終了予定: <t:{end_t}:F>", ephemeral=True)
 
 # --- 実行 ---
 if __name__ == "__main__":

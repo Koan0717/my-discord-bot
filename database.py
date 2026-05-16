@@ -44,6 +44,13 @@ async def setup_db():
                 expire_at TIMESTAMP
             )
         ''')
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS evaluation_periods (
+                user_id BIGINT PRIMARY KEY,
+                start_time TIMESTAMP,
+                end_time TIMESTAMP
+            )
+        ''')
 
 async def get_user(user_id: int):
     p = await get_pool()
@@ -173,3 +180,43 @@ async def reset_user_balance(user_id: int):
     p = await get_pool()
     async with p.acquire() as conn:
         await conn.execute('UPDATE users SET balance = 0 WHERE user_id = $1', user_id)
+
+# --- 評価期間管理用関数 ---
+async def add_evaluation_period(user_id: int, start_time: datetime.datetime, end_time: datetime.datetime):
+    if start_time.tzinfo:
+        start_time = start_time.replace(tzinfo=None)
+    if end_time.tzinfo:
+        end_time = end_time.replace(tzinfo=None)
+        
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO evaluation_periods (user_id, start_time, end_time) 
+            VALUES ($1, $2, $3) 
+            ON CONFLICT (user_id) DO NOTHING
+        ''', user_id, start_time, end_time)
+
+async def get_evaluation_period(user_id: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        row = await conn.fetchrow('SELECT start_time, end_time FROM evaluation_periods WHERE user_id = $1', user_id)
+        if row:
+            return {"start_time": row['start_time'], "end_time": row['end_time']}
+        return None
+
+async def get_all_evaluation_periods():
+    p = await get_pool()
+    async with p.acquire() as conn:
+        rows = await conn.fetch('SELECT user_id, start_time, end_time FROM evaluation_periods ORDER BY end_time ASC')
+        return [{"user_id": row['user_id'], "start_time": row['start_time'], "end_time": row['end_time']} for row in rows]
+
+async def extend_evaluation_period(user_id: int, extra_days: int) -> bool:
+    p = await get_pool()
+    async with p.acquire() as conn:
+        row = await conn.fetchrow('SELECT end_time FROM evaluation_periods WHERE user_id = $1', user_id)
+        if not row:
+            return False
+            
+        new_end_time = row['end_time'] + datetime.timedelta(days=extra_days)
+        await conn.execute('UPDATE evaluation_periods SET end_time = $1 WHERE user_id = $2', new_end_time, user_id)
+        return True
