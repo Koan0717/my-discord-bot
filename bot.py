@@ -35,11 +35,15 @@ CREATE_VC_CHANNEL_ID = 1503789689184714902
 # 面接・入界設定
 NEW_MEMBER_ROLE_NAME = "人間"
 PENDING_MEMBER_ROLE_NAME = "入界待機者"
-INTERVIEWER_ROLE_NAMES = ["最高亡魂導師", "亡魂導師"]
-FREE_INN_ROLE_NAME = "死者"
+INTERVIEWER_ROLE_NAMES = ["幽裁官", "最高幽裁官"]
+FREE_INN_ROLE_NAMES = ["死者", "死神"]
 EMBLEM_MANAGER_ROLE_NAME = "紋章師統括"
 EMBLEM_MASTER_ROLE_NAME = "紋章師"
 INITIAL_COINS = 30000
+
+# 自己紹介・評価設定
+SELF_INTRO_CHANNEL_IDS = [1503022128759570682, 1503022167938433064]
+EVALUATION_FORUM_CHANNEL_ID = 1503360808669806713
 
 # ------------
 
@@ -185,6 +189,43 @@ async def on_message(message):
                 if lv_channel:
                     await lv_channel.send(f"🎊 {message.author.mention} が **TCレベルアップ！** (Lv.{new_lv-1} ➔ **{new_lv}**)")
     
+    # 3. 自己紹介チャンネルでの発言検知（スレッド自動作成）
+    if message.channel.id in SELF_INTRO_CHANNEL_IDS:
+        human_role = discord.utils.get(message.guild.roles, name=NEW_MEMBER_ROLE_NAME)
+        if human_role and human_role in message.author.roles:
+            forum_channel = bot.get_channel(EVALUATION_FORUM_CHANNEL_ID)
+            if isinstance(forum_channel, discord.ForumChannel):
+                # 重複チェック: アクティブなスレッド名にユーザーIDが含まれているか
+                duplicate = any(str(user_id) in thread.name for thread in forum_channel.threads)
+                
+                if not duplicate:
+                    period = await database.get_evaluation_period(user_id)
+                    if period:
+                        start_str = f"<t:{int(period['start_time'].timestamp())}:F>"
+                        end_str = f"<t:{int(period['end_time'].timestamp())}:F>"
+                        content = (
+                            f"**対象者:** {message.author.mention}\n"
+                            f"**評価期間:** {start_str} ～ {end_str}\n\n"
+                            f"**自己紹介へのリンク:**\n{message.jump_url}"
+                        )
+                    else:
+                        content = (
+                            f"**対象者:** {message.author.mention}\n"
+                            f"**評価期間:** データが見つかりませんでした。\n\n"
+                            f"**自己紹介へのリンク:**\n{message.jump_url}"
+                        )
+                        
+                    thread_name = f"{message.author.display_name}_{user_id}"
+                    try:
+                        await forum_channel.create_thread(
+                            name=thread_name,
+                            content=content,
+                            reason=f"Auto created evaluation thread for {message.author.display_name}"
+                        )
+                        print(f"[Evaluation Thread] Created for {message.author.display_name}")
+                    except Exception as e:
+                        print(f"[ERROR] Failed to create forum thread: {e}")
+
     await bot.process_commands(message)
 
 @bot.event
@@ -337,7 +378,7 @@ async def on_member_update(before, after):
             print(f"[Evaluation] Started for {after.display_name}: {start_time} to {end_time}")
 
 # --- 運営権限チェック ---
-ADMIN_ROLE_NAMES = ["大魔王", "黒棺秘書官", "機巧墓守"]
+ADMIN_ROLE_NAMES = ["大魔王", "管理者"]
 EVALUATOR_ROLE_NAMES = ["最高観測官", "深淵観測官"]
 
 def is_admin():
@@ -768,9 +809,9 @@ async def process_room_purchase(interaction: discord.Interaction, room_type: str
     settings = ROOM_SETTINGS[room_type]
     price, duration = settings["price"], settings["duration_hours"]
     
-    # 死者ロールによる無料化
+    # 無料対象ロールによる無料化
     user_roles = [r.name for r in interaction.user.roles]
-    if room_type == "宿" and FREE_INN_ROLE_NAME in user_roles:
+    if room_type == "宿" and any(r in FREE_INN_ROLE_NAMES for r in user_roles):
         price = 0
 
     if await database.get_balance(owner_id) < price:
@@ -805,8 +846,8 @@ class RoomView(discord.ui.View):
     async def inn(self, it, btn):
         user_roles = [r.name for r in it.user.roles]
         price = ROOM_SETTINGS['宿']['price']
-        if FREE_INN_ROLE_NAME in user_roles:
-            msg = f"「宿」を作成しますか？\nあなたは「{FREE_INN_ROLE_NAME}」のため **無料** で作成可能です。"
+        if any(r in FREE_INN_ROLE_NAMES for r in user_roles):
+            msg = f"「宿」を作成しますか？\nあなたは対象ロールのため **無料** で作成可能です。"
         else:
             msg = f"「宿」を購入しますか？ ({price} {CURRENCY_NAME})"
         await it.response.send_message(msg, view=RoomConfirmView("宿"), ephemeral=True)
@@ -999,7 +1040,7 @@ class AdminGroup(app_commands.Group):
     async def s_inn(self, it):
         embed = discord.Embed(
             title="🏠 宿屋", 
-            description=f"部屋を借りる\n※ロール「{FREE_INN_ROLE_NAME}」をお持ちの方は「宿」が無料になります。", 
+            description=f"部屋を借りる\n※ロール「{'」や「'.join(FREE_INN_ROLE_NAMES)}」をお持ちの方は「宿」が無料になります。", 
             color=discord.Color.gold()
         )
         await it.channel.send(embed=embed, view=RoomView())
@@ -1076,6 +1117,62 @@ class InterviewerGroup(app_commands.Group):
             return await it.response.send_message("権限がありません。", ephemeral=True)
         await it.channel.send(embed=discord.Embed(title="✨ 入界手続き", description="下のボタンから登録してください。", color=discord.Color.green()), view=InterviewPanelView())
         await it.response.send_message("設置完了", ephemeral=True)
+
+    @app_commands.command(name="入界手続き実行", description="VCチャットの履歴から入界待機者の発言を取得し、入界手続きを一括実行します")
+    async def execute_interview(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=False)
+        
+        user_roles = [r.name for r in interaction.user.roles]
+        is_interviewer = any(r in INTERVIEWER_ROLE_NAMES for r in user_roles)
+        is_admin = any(r in ADMIN_ROLE_NAMES for r in user_roles)
+        if not is_interviewer and not is_admin and not interaction.user.guild_permissions.administrator:
+            return await interaction.followup.send("権限がありません。", ephemeral=True)
+            
+        pending_role = discord.utils.get(interaction.guild.roles, name=PENDING_MEMBER_ROLE_NAME)
+        new_role = discord.utils.get(interaction.guild.roles, name=NEW_MEMBER_ROLE_NAME)
+        
+        if not pending_role or not new_role:
+            return await interaction.followup.send("エラー：ロールの設定が見つかりません。", ephemeral=True)
+            
+        target_users = {}
+        try:
+            async for msg in interaction.channel.history(limit=50):
+                if msg.author.bot: continue
+                if isinstance(msg.author, discord.Member) and pending_role in msg.author.roles:
+                    if msg.author not in target_users:
+                        name_str = msg.content.strip()[:32]
+                        if name_str:
+                            target_users[msg.author] = name_str
+        except Exception as e:
+            return await interaction.followup.send(f"履歴の取得に失敗しました: {e}", ephemeral=True)
+            
+        if not target_users:
+            return await interaction.followup.send("対象となる入界待機者の発言が見つかりませんでした。", ephemeral=True)
+            
+        results = []
+        for member, desired_name in target_users.items():
+            duplicate = False
+            for m in interaction.guild.members:
+                if m.id != member.id and m.display_name == desired_name and pending_role not in m.roles:
+                    duplicate = True
+                    break
+            
+            if duplicate:
+                await interaction.channel.send(f"{member.mention} 鯖内にて使用済みの名前です。")
+                results.append(f"❌ {member.display_name} -> {desired_name} (名前重複)")
+                continue
+                
+            try:
+                await member.edit(nick=desired_name)
+                await member.add_roles(new_role)
+                await member.remove_roles(pending_role)
+                await database.add_balance(member.id, INITIAL_COINS)
+                results.append(f"✅ {member.mention} -> **{desired_name}**")
+            except Exception as e:
+                results.append(f"❌ {member.display_name} -> 権限エラー等")
+                
+        embed = discord.Embed(title="✨ 入界手続き一括実行結果", description="\n".join(results), color=discord.Color.green())
+        await interaction.followup.send(embed=embed)
 
 class EvaluationGroup(app_commands.Group):
     def __init__(self): super().__init__(name="評価期間", description="評価期間関連コマンド")
