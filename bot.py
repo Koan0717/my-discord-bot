@@ -195,8 +195,8 @@ async def on_message(message):
         if human_role and human_role in message.author.roles:
             forum_channel = bot.get_channel(EVALUATION_FORUM_CHANNEL_ID)
             if isinstance(forum_channel, discord.ForumChannel):
-                # 重複チェック: アクティブなスレッド名にユーザーIDが含まれているか
-                duplicate = any(str(user_id) in thread.name for thread in forum_channel.threads)
+                # 重複チェック: アクティブなスレッド名にユーザー名（アカウント名）が含まれているか
+                duplicate = any(message.author.name in thread.name for thread in forum_channel.threads)
                 
                 if not duplicate:
                     period = await database.get_evaluation_period(user_id)
@@ -215,7 +215,7 @@ async def on_message(message):
                             f"**自己紹介へのリンク:**\n{message.jump_url}"
                         )
                         
-                    thread_name = f"{message.author.display_name}_{user_id}"
+                    thread_name = f"{message.author.display_name}_{message.author.name}"
                     try:
                         await forum_channel.create_thread(
                             name=thread_name,
