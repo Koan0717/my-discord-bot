@@ -1174,6 +1174,23 @@ class InterviewerGroup(app_commands.Group):
         embed = discord.Embed(title="✨ 入界手続き一括実行結果", description="\n".join(results), color=discord.Color.green())
         await interaction.followup.send(embed=embed)
 
+    @app_commands.command(name="チャット削除", description="現在のチャンネルのチャット履歴を削除します（最大100件）")
+    async def clear_chat(self, interaction: discord.Interaction, amount: int = 100):
+        user_roles = [r.name for r in interaction.user.roles]
+        is_interviewer = any(r in INTERVIEWER_ROLE_NAMES for r in user_roles)
+        is_admin = any(r in ADMIN_ROLE_NAMES for r in user_roles)
+        if not is_interviewer and not is_admin and not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("権限がありません。", ephemeral=True)
+            
+        await interaction.response.defer(ephemeral=True)
+        try:
+            deleted = await interaction.channel.purge(limit=amount)
+            await interaction.followup.send(f"✅ {len(deleted)}件のメッセージを削除しました。", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.followup.send("❌ メッセージを削除する権限（メッセージの管理）がBotにありません。", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ エラーが発生しました: {e}", ephemeral=True)
+
 class EvaluationGroup(app_commands.Group):
     def __init__(self): super().__init__(name="評価期間", description="評価期間関連コマンド")
 
