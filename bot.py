@@ -39,6 +39,8 @@ INTERVIEWER_ROLE_NAMES = ["幽裁官", "最高幽裁官"]
 FREE_INN_ROLE_NAMES = ["死者", "死神"]
 EMBLEM_MANAGER_ROLE_NAME = "紋章師統括"
 EMBLEM_MASTER_ROLE_NAME = "紋章師"
+CONFESSION_PRIEST_ROLE_NAME = "告解司祭"
+PRIEST_ROLE_NAME = "司祭"
 INITIAL_COINS = 30000
 
 # 自己紹介・評価設定
@@ -73,6 +75,7 @@ class EconomyBot(commands.Bot):
         self.add_view(SlotView())
         self.add_view(InterviewPanelView())
         self.add_view(EmblemRequestPanelView())
+        self.add_view(ConfessionRequestPanelView())
         self.add_view(TicketControlView())
         self.add_view(VCRenamePanelView())
         
@@ -773,6 +776,139 @@ class EmblemRequestPanelView(discord.ui.View):
         view = EmblemSelectView(interaction.guild)
         await interaction.response.send_message("担当者を選択してください：", view=view, ephemeral=True)
 
+
+# --- 告解チケットシステム ---
+
+class ConfessionRequestModal(discord.ui.Modal, title='告解・相談依頼'):
+    details = discord.ui.TextInput(
+        label='依頼内容の詳細',
+        style=discord.TextStyle.paragraph,
+        placeholder='例: 告解をお願いしたいです。 / ○○について相談したいです。',
+        required=True,
+        max_length=500
+    )
+
+    def __init__(self, target_member):
+        super().__init__()
+        self.target_member = target_member
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        
+        # チケット番号の決定 (空いている最小の番号を探す)
+        current_ticket_nums = []
+        for c in guild.channels:
+            if c.name.startswith("confess-"):
+                try:
+                    num = int(c.name.split("-")[1])
+                    current_ticket_nums.append(num)
+                except:
+                    pass
+        
+        ticket_num = 1
+        while ticket_num in current_ticket_nums:
+            ticket_num += 1
+            
+        channel_name = f"confess-{ticket_num:03d}"
+        
+        # 権限設定
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+            self.target_member: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        }
+        
+        # 管理・告解司祭・司祭系ロールにも権限を付与
+        for role_name in ADMIN_ROLE_NAMES + [CONFESSION_PRIEST_ROLE_NAME, PRIEST_ROLE_NAME]:
+            role = discord.utils.get(guild.roles, name=role_name)
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+
+        try:
+            # チャンネル作成 (パネルがあるカテゴリに作成)
+            category = interaction.channel.category
+            ticket_channel = await guild.create_text_channel(
+                name=channel_name,
+                category=category,
+                overwrites=overwrites,
+                reason=f"Confession ticket for {interaction.user.display_name}"
+            )
+            
+            # チケット内での案内メッセージ
+            embed = discord.Embed(
+                title="⛪ 告解・相談チケット",
+                description=(
+                    f"**依頼者:** {interaction.user.mention}\n"
+                    f"**担当者:** {self.target_member.mention}\n\n"
+                    f"**【相談内容】**\n{self.details.value}\n\n"
+                    "内容の確認や相談はこちらのチャンネルで行ってください。\n"
+                    "完了したら下のボタンでチケットを閉じることができます。"
+                ),
+                color=discord.Color.purple()
+            )
+            
+            # 管理・告解司祭・司祭をメンション（通知用）
+            mentions = []
+            for role_name in ADMIN_ROLE_NAMES + [CONFESSION_PRIEST_ROLE_NAME, PRIEST_ROLE_NAME]:
+                role = discord.utils.get(guild.roles, name=role_name)
+                if role: mentions.append(role.mention)
+            
+            mention_str = " ".join(mentions)
+            await ticket_channel.send(content=f"{interaction.user.mention} {self.target_member.mention} {mention_str}", embed=embed, view=TicketControlView())
+            
+            await interaction.followup.send(f"✅ チケットを作成しました: {ticket_channel.mention}", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"エラーが発生しました: {e}", ephemeral=True)
+
+class ConfessionSelectView(discord.ui.View):
+    def __init__(self, guild):
+        super().__init__(timeout=60)
+        # 「告解司祭」と「司祭」ロールを持つメンバーを取得
+        priest1_role = discord.utils.get(guild.roles, name=CONFESSION_PRIEST_ROLE_NAME)
+        priest2_role = discord.utils.get(guild.roles, name=PRIEST_ROLE_NAME)
+        
+        member_set = set()
+        if priest1_role: member_set.update(priest1_role.members)
+        if priest2_role: member_set.update(priest2_role.members)
+        
+        options = []
+        for member in sorted(member_set, key=lambda m: m.display_name):
+            options.append(discord.SelectOption(
+                label=member.display_name,
+                value=str(member.id),
+                description=f"{member.name}"
+            ))
+        
+        if not options:
+            self.add_item(discord.ui.Button(label="現在、対応可能な司祭がいません", disabled=True))
+        else:
+            select = discord.ui.Select(
+                placeholder="担当する司祭を選択してください...",
+                options=options[:25]
+            )
+            select.callback = self.select_callback
+            self.add_item(select)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        user_id = int(interaction.data['values'][0])
+        target_member = interaction.guild.get_member(user_id)
+        if not target_member:
+            await interaction.response.send_message("メンバーが見つかりませんでした。", ephemeral=True)
+            return
+        
+        await interaction.response.send_modal(ConfessionRequestModal(target_member))
+
+class ConfessionRequestPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="告解・相談をする", style=discord.ButtonStyle.primary, emoji="⛪", custom_id="persistent_confession_req_btn")
+    async def request_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = ConfessionSelectView(interaction.guild)
+        await interaction.response.send_message("担当者を選択してください：", view=view, ephemeral=True)
+
+
 class TicketControlView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -1070,6 +1206,28 @@ class AdminGroup(app_commands.Group):
             color=discord.Color.blue()
         )
         await it.channel.send(embed=embed, view=EmblemRequestPanelView())
+        await it.response.send_message("設置完了", ephemeral=True)
+
+    @app_commands.command(name="パネル設置_告解", description="告解パネルを送信")
+    async def s_confession(self, it):
+        user_roles = [r.name for r in it.user.roles]
+        is_priest = any(r in [CONFESSION_PRIEST_ROLE_NAME, PRIEST_ROLE_NAME] for r in user_roles)
+        if not is_priest and not has_admin_role(it.user) and not it.user.guild_permissions.administrator:
+            return await it.response.send_message("権限がありません（司祭または運営専用です）。", ephemeral=True)
+        
+        embed = discord.Embed(
+            title="⛪ 告解・相談室 依頼所",
+            description=(
+                "こちらから司祭の方々へ告解や相談を依頼できます！\n\n"
+                "**【依頼方法】**\n"
+                "1. 下の「告解・相談をする」ボタンを押す\n"
+                "2. 相談したい担当司祭を選択する\n"
+                "3. 相談内容を記入して送信\n\n"
+                "※依頼送信後、担当者から連絡があるまでお待ちください。"
+            ),
+            color=discord.Color.purple()
+        )
+        await it.channel.send(embed=embed, view=ConfessionRequestPanelView())
         await it.response.send_message("設置完了", ephemeral=True)
 
     @app_commands.command(name="パネル設置_vc管理", description="VC管理（名前変更・人数制限）パネルを送信")
