@@ -78,6 +78,7 @@ class EconomyBot(commands.Bot):
         self.add_view(ConfessionRequestPanelView())
         self.add_view(TicketControlView())
         self.add_view(VCRenamePanelView())
+        self.add_view(PanelSetupView())
         
         # グループの登録
         self.tree.add_command(AdminGroup())
@@ -1119,8 +1120,172 @@ class SlotView(discord.ui.View):
     @discord.ui.button(label="🎰 スロットで遊ぶ", style=discord.ButtonStyle.primary, custom_id="persistent_slot_btn")
     async def play(self, it, btn): await it.response.send_modal(SlotBetModal())
 
+class PanelSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="チンチロリン", description="チンチロリンゲームのパネルを設置します", emoji="🎲", value="chinchiro"),
+            discord.SelectOption(label="コイントス", description="コイントスゲームのパネルを設置します", emoji="🪙", value="coinflip"),
+            discord.SelectOption(label="スロット", description="スロットゲームのパネルを設置します", emoji="🎰", value="slot"),
+            discord.SelectOption(label="宿屋", description="宿・高級宿の購入パネルを設置します", emoji="🛖", value="inn"),
+            discord.SelectOption(label="カスタムVC", description="カスタムVCの作成パネルを設置します", emoji="✨", value="custom_vc"),
+            discord.SelectOption(label="スタンプ依頼", description="スタンプ制作依頼のパネルを設置します", emoji="🎨", value="stamp"),
+            discord.SelectOption(label="告解・相談室", description="告解・相談依頼のパネルを設置します", emoji="⛪", value="confession"),
+            discord.SelectOption(label="VC管理", description="VC名・人数制限変更のパネルを設置します", emoji="⚙️", value="vc_manage"),
+            discord.SelectOption(label="入界手続き", description="新規メンバーの入界手続きパネルを設置します", emoji="📝", value="interview")
+        ]
+        super().__init__(placeholder="設置するパネルを選択してください...", min_values=1, max_values=1, options=options, custom_id="admin_panel_setup_select")
+
+    async def callback(self, interaction: discord.Interaction):
+        val = self.values[0]
+        channel = interaction.channel
+        
+        # 権限チェック (一般にこのインタラクションを押せるのは呼び出した本人だけだが念のため)
+        if not has_admin_role(interaction.user) and not interaction.user.guild_permissions.administrator:
+            # 面接用パネルだけは面接官ロールでも許可
+            if val == "interview":
+                user_roles = [r.name for r in interaction.user.roles]
+                is_interviewer = any(r in INTERVIEWER_ROLE_NAMES for r in user_roles)
+                if not is_interviewer:
+                    return await interaction.response.send_message("この操作を実行する権限がありません。", ephemeral=True)
+            else:
+                return await interaction.response.send_message("この操作を実行する権限がありません（運営専用）。", ephemeral=True)
+
+        if val == "chinchiro":
+            embed = discord.Embed(title="🎲 チンチロリン", description="カジノへようこそ！", color=discord.Color.dark_green())
+            await channel.send(embed=embed, view=ChinchiroView())
+            await interaction.response.send_message("✅ チンチロリンパネルを設置しました。", ephemeral=True)
+        elif val == "coinflip":
+            embed = discord.Embed(title="🪙 コイントス", description="表か裏か！", color=discord.Color.blue())
+            await channel.send(embed=embed, view=CoinflipView())
+            await interaction.response.send_message("✅ コイントスパネルを設置しました。", ephemeral=True)
+        elif val == "slot":
+            embed = discord.Embed(title="🎰 スロット", description="絵柄を揃えろ！", color=discord.Color.orange())
+            await channel.send(embed=embed, view=SlotView())
+            await interaction.response.send_message("✅ スロットパネルを設置しました。", ephemeral=True)
+        elif val == "inn":
+            embed = discord.Embed(
+                title="🏠 宿屋", 
+                description=f"部屋を借りる\n※ロール「{'」や「'.join(FREE_INN_ROLE_NAMES)}」をお持ちの方は「宿」が無料になります。", 
+                color=discord.Color.gold()
+            )
+            await channel.send(embed=embed, view=RoomView())
+            await interaction.response.send_message("✅ 宿屋パネルを設置しました。", ephemeral=True)
+        elif val == "custom_vc":
+            embed = discord.Embed(title="✨ カスタムVC", description="自分だけの部屋を作成", color=discord.Color.purple())
+            await channel.send(embed=embed, view=CustomRoomView())
+            await interaction.response.send_message("✅ カスタムVCパネルを設置しました。", ephemeral=True)
+        elif val == "stamp":
+            embed = discord.Embed(
+                title="スタンプ制作 依頼所",
+                description=(
+                    "こちらから紋章師の方々へスタンプの制作を依頼できます。\n\n"
+                    "**【依頼方法】**\n"
+                    "1. 下の「スタンプを依頼する」ボタンを押す\n"
+                    "2. 制作を依頼したい担当者を選択する\n"
+                    "3. 依頼内容の詳細を記入して送信\n\n"
+                    "※依頼送信後、担当者から連絡があるまでお待ちください。"
+                ),
+                color=discord.Color.blue()
+            )
+            await channel.send(embed=embed, view=EmblemRequestPanelView())
+            await interaction.response.send_message("✅ スタンプ依頼パネルを設置しました。", ephemeral=True)
+        elif val == "confession":
+            embed = discord.Embed(
+                title="告解・相談室 依頼所",
+                description=(
+                    "こちらから司祭の方々へ告解や相談を依頼できます。\n\n"
+                    "**【依頼方法】**\n"
+                    "1. 下の「告解・相談をする」ボタンを押す\n"
+                    "2. 相談したい担当司祭を選択する\n"
+                    "3. 相談内容を記入して送信\n\n"
+                    "※依頼送信後、担当者から連絡があるまでお待ちください。"
+                ),
+                color=discord.Color.purple()
+            )
+            await channel.send(embed=embed, view=ConfessionRequestPanelView())
+            await interaction.response.send_message("✅ 告解パネルを設置しました。", ephemeral=True)
+        elif val == "vc_manage":
+            embed = discord.Embed(
+                title="⚙️ VC管理パネル",
+                description=(
+                    "自分が作成した部屋（一時部屋、カスタムVC、宿など）の設定を変更できます。\n\n"
+                    "**1. 設定したいVCに参加する**\n"
+                    "**2. 下のボタンを押す**"
+                ),
+                color=discord.Color.blue()
+            )
+            await channel.send(embed=embed, view=VCRenamePanelView())
+            await interaction.response.send_message("✅ VC管理パネルを設置しました。", ephemeral=True)
+        elif val == "interview":
+            embed = discord.Embed(title="✨ 入界手続き", description="下のボタンから登録してください。", color=discord.Color.green())
+            await channel.send(embed=embed, view=InterviewPanelView())
+            await interaction.response.send_message("✅ 入界手続きパネルを設置しました。", ephemeral=True)
+
+class PanelSetupView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(PanelSelect())
+
 class AdminGroup(app_commands.Group):
     def __init__(self): super().__init__(name="管理者", description="【管理者専用】管理コマンド")
+
+    @app_commands.command(name="パネル設置", description="【管理者専用】自分にしか見えないパネル設定画面を表示し、各種パネルを設置します")
+    @is_admin()
+    async def panel_setup(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="⚙️ サーバー設定・パネル設置",
+            description="下のメニューから設置したいパネルを選択してください。現在の設定情報は以下の通りです。",
+            color=0x2f3136
+        )
+        
+        # 経済
+        embed.add_field(
+            name="💰 経済設定",
+            value=f"通貨名: **{CURRENCY_NAME}**\n初期所持金: **{INITIAL_COINS} {CURRENCY_NAME}**",
+            inline=False
+        )
+        
+        # 宿・カスタムVC
+        inn_price = ROOM_SETTINGS['宿']['price']
+        inn_hours = ROOM_SETTINGS['宿']['duration_hours']
+        lux_price = ROOM_SETTINGS['高級宿']['price']
+        lux_hours = ROOM_SETTINGS['高級宿']['duration_hours']
+        cvc_price = ROOM_SETTINGS['カスタムVC']['price']
+        cvc_hours = ROOM_SETTINGS['カスタムVC']['duration_hours']
+        
+        embed.add_field(
+            name="🏨 部屋・宿設定",
+            value=(
+                f"🛖 **宿**: {inn_price} {CURRENCY_NAME} / {inn_hours}h (無料ロール: {', '.join(FREE_INN_ROLE_NAMES)})\n"
+                f"🏰 **高級宿**: {lux_price} {CURRENCY_NAME} / {lux_hours}h\n"
+                f"✨ **カスタムVC**: {cvc_price} {CURRENCY_NAME} / {cvc_hours}h"
+            ),
+            inline=False
+        )
+        
+        # ロール・メンバーシップ
+        embed.add_field(
+            name="👥 ロール設定",
+            value=(
+                f"入界後ロール: **{NEW_MEMBER_ROLE_NAME}**\n"
+                f"待機者ロール: **{PENDING_MEMBER_ROLE_NAME}**\n"
+                f"面接官ロール: **{', '.join(INTERVIEWER_ROLE_NAMES)}**"
+            ),
+            inline=False
+        )
+        
+        # 制作・告解
+        embed.add_field(
+            name="🎨 制作・告解設定",
+            value=(
+                f"紋章師ロール: **{EMBLEM_MANAGER_ROLE_NAME}**, **{EMBLEM_MASTER_ROLE_NAME}**\n"
+                f"司祭ロール: **{CONFESSION_PRIEST_ROLE_NAME}**, **{PRIEST_ROLE_NAME}**"
+            ),
+            inline=False
+        )
+        
+        view = PanelSetupView()
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @app_commands.command(name="ランクリセット", description="ランクを初期化します")
     @is_admin()
