@@ -1196,7 +1196,7 @@ class AdminGroup(app_commands.Group):
         embed = discord.Embed(
             title="🎨 スタンプ制作 依頼所",
             description=(
-                "こちらから紋章師の方々へスタンプの制作を依頼できます！\n\n"
+                "こちらから紋章師の方々へスタンプの制作を依頼できます。\n\n"
                 "**【依頼方法】**\n"
                 "1. 下の「スタンプを依頼する」ボタンを押す\n"
                 "2. 制作を依頼したい担当者を選択する\n"
@@ -1218,7 +1218,7 @@ class AdminGroup(app_commands.Group):
         embed = discord.Embed(
             title="⛪ 告解・相談室 依頼所",
             description=(
-                "こちらから司祭の方々へ告解や相談を依頼できます！\n\n"
+                "こちらから司祭の方々へ告解や相談を依頼できます。\n\n"
                 "**【依頼方法】**\n"
                 "1. 下の「告解・相談をする」ボタンを押す\n"
                 "2. 相談したい担当司祭を選択する\n"
