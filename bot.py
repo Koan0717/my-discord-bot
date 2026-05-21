@@ -73,6 +73,7 @@ class EconomyBot(commands.Bot):
         self.add_view(ChinchiroView())
         self.add_view(CoinflipView())
         self.add_view(SlotView())
+        self.add_view(BlackjackView())
         self.add_view(InterviewPanelView())
         self.add_view(EmblemRequestPanelView())
         self.add_view(ConfessionRequestPanelView())
@@ -1120,12 +1121,231 @@ class SlotView(discord.ui.View):
     @discord.ui.button(label="🎰 スロットで遊ぶ", style=discord.ButtonStyle.primary, custom_id="persistent_slot_btn")
     async def play(self, it, btn): await it.response.send_modal(SlotBetModal())
 
+def create_blackjack_deck():
+    suits = ["♠️", "♥️", "♦️", "♣️"]
+    values = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    deck = [{"suit": suit, "value": val} for suit in suits for val in values]
+    random.shuffle(deck)
+    return deck
+
+def calculate_blackjack_score(hand):
+    score = 0
+    aces = 0
+    for card in hand:
+        val = card["value"]
+        if val in ["J", "Q", "K"]:
+            score += 10
+        elif val == "A":
+            score += 11
+            aces += 1
+        else:
+            score += int(val)
+    while score > 21 and aces > 0:
+        score -= 10
+        aces -= 1
+    return score
+
+class BlackjackBetModal(discord.ui.Modal, title='ブラックジャック：賭け金入力'):
+    bet_input = discord.ui.TextInput(label='賭ける金額', placeholder='例: 1000', max_length=10, required=True)
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            bet = int(self.bet_input.value)
+            if bet <= 0 or bet > 100000:
+                return await interaction.response.send_message("1〜100,000の間で入力してください。", ephemeral=True)
+            await interaction.response.defer(ephemeral=True)
+            user_data = await database.get_user(interaction.user.id)
+            now = datetime.datetime.now(JST)
+            today_str = now.strftime("%Y-%m-%d")
+            count = user_data.get("chinchiro_count", 0)
+            if user_data.get("chinchiro_last_date") != today_str:
+                await database.reset_gambling_count(interaction.user.id, today_str); count = 0
+            if count >= 10:
+                return await interaction.followup.send("本日の上限(10回)に達しました。", ephemeral=True)
+            if await database.get_balance(interaction.user.id) < bet:
+                return await interaction.followup.send("残高不足です。", ephemeral=True)
+            
+            await database.remove_balance(interaction.user.id, bet)
+            await database.increment_gambling_count(interaction.user.id)
+            
+            view = BlackjackGameView(interaction.user, bet)
+            initial_blackjack_embed = await view.check_initial_blackjack()
+            if initial_blackjack_embed:
+                await interaction.followup.send(f"🃏 **ブラックジャック開始！** (本日 {count+1}/10回目)\n賭け金: **{bet} {CURRENCY_NAME}**", embed=initial_blackjack_embed, ephemeral=True)
+            else:
+                embed = view.build_embed(description="カードが配られました。どうしますか？")
+                msg = await interaction.followup.send(f"🃏 **ブラックジャック開始！** (本日 {count+1}/10回目)\n賭け金: **{bet} {CURRENCY_NAME}**", embed=embed, view=view, ephemeral=True)
+                view.message = msg
+        except ValueError:
+            try:
+                await interaction.followup.send("金額は半角数字で入力してください。", ephemeral=True)
+            except Exception:
+                await interaction.response.send_message("金額は半角数字で入力してください。", ephemeral=True)
+        except Exception as e:
+            print(f"[ERROR] BlackjackBetModal: {e}")
+            try:
+                await interaction.followup.send("エラーが発生しました。", ephemeral=True)
+            except Exception:
+                await interaction.response.send_message("エラーが発生しました。", ephemeral=True)
+
+class BlackjackGameView(discord.ui.View):
+    def __init__(self, user, bet):
+        super().__init__(timeout=60)
+        self.user = user
+        self.bet = bet
+        self.deck = create_blackjack_deck()
+        self.player_hand = [self.deck.pop(), self.deck.pop()]
+        self.dealer_hand = [self.deck.pop(), self.deck.pop()]
+        self.message = None
+
+    def format_hand(self, hand, hide_second=False):
+        if hide_second:
+            return f"{hand[0]['suit']} **{hand[0]['value']}**,  ❓ **?**"
+        return ", ".join(f"{card['suit']} **{card['value']}**" for card in hand)
+
+    def get_visible_score(self, hand, hide_second=False):
+        if hide_second:
+            return calculate_blackjack_score([hand[0]])
+        return calculate_blackjack_score(hand)
+
+    def build_embed(self, title="🃏 ブラックジャック", color=0x3498db, description="", is_final=False):
+        embed = discord.Embed(title=title, color=color, description=description)
+        
+        dealer_cards = self.format_hand(self.dealer_hand, hide_second=not is_final)
+        dealer_score = self.get_visible_score(self.dealer_hand, hide_second=not is_final)
+        embed.add_field(
+            name=f"🤖 ディーラー (Score: {dealer_score}{' + ?' if not is_final else ''})",
+            value=dealer_cards,
+            inline=False
+        )
+        
+        player_cards = self.format_hand(self.player_hand)
+        player_score = calculate_blackjack_score(self.player_hand)
+        embed.add_field(
+            name=f"👤 あなた (Score: {player_score})",
+            value=player_cards,
+            inline=False
+        )
+        return embed
+
+    async def check_initial_blackjack(self):
+        player_score = calculate_blackjack_score(self.player_hand)
+        if player_score == 21:
+            dealer_score = calculate_blackjack_score(self.dealer_hand)
+            if dealer_score == 21:
+                win_amount = self.bet
+                await database.add_balance(self.user.id, win_amount)
+                title = "🤝 引き分け"
+                color = discord.Color.light_grey()
+                description = f"双方ブラックジャック！引き分け（プッシュ）です。\n**{win_amount} {CURRENCY_NAME}** が戻ります。"
+            else:
+                win_amount = int(self.bet * 2.5)
+                await database.add_balance(self.user.id, win_amount)
+                title = "🃏 ブラックジャック！"
+                color = discord.Color.gold()
+                description = f"ブラックジャック達成！\n**{win_amount} {CURRENCY_NAME}** 獲得！"
+            return self.build_embed(title=title, color=color, description=description, is_final=True)
+        return None
+
+    async def on_timeout(self):
+        for child in self.children:
+            if not child.disabled:
+                break
+        else:
+            return
+        await self.resolve_stand(None)
+
+    @discord.ui.button(label="カードを引く (Hit)", style=discord.ButtonStyle.success, emoji="🃏")
+    async def hit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user != self.user:
+            return await interaction.response.send_message("これはあなたのゲームではありません。", ephemeral=True)
+        
+        self.player_hand.append(self.deck.pop())
+        score = calculate_blackjack_score(self.player_hand)
+        
+        if score > 21:
+            await self.resolve_bust(interaction)
+        elif score == 21:
+            await self.resolve_stand(interaction)
+        else:
+            embed = self.build_embed(description="どうしますか？")
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="勝負する (Stand)", style=discord.ButtonStyle.danger, emoji="🛑")
+    async def stand(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user != self.user:
+            return await interaction.response.send_message("これはあなたのゲームではありません。", ephemeral=True)
+        
+        await self.resolve_stand(interaction)
+
+    async def resolve_bust(self, interaction: discord.Interaction):
+        for child in self.children:
+            child.disabled = True
+        embed = self.build_embed(
+            title="💀 バスト！",
+            color=discord.Color.red(),
+            description=f"合計が21を超えました！\n**{self.bet} {CURRENCY_NAME}** 没収...",
+            is_final=True
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def resolve_stand(self, interaction: discord.Interaction = None):
+        for child in self.children:
+            child.disabled = True
+            
+        player_score = calculate_blackjack_score(self.player_hand)
+        while calculate_blackjack_score(self.dealer_hand) < 17:
+            self.dealer_hand.append(self.deck.pop())
+            
+        dealer_score = calculate_blackjack_score(self.dealer_hand)
+        
+        win_amount = 0
+        if dealer_score > 21:
+            win_amount = self.bet * 2
+            title = "🏆 勝ち！"
+            color = discord.Color.gold()
+            description = f"ディーラーがバストしました！\n**{win_amount} {CURRENCY_NAME}** 獲得！"
+        elif player_score > dealer_score:
+            win_amount = self.bet * 2
+            title = "🏆 勝ち！"
+            color = discord.Color.gold()
+            description = f"ディーラーを上回りました！\n**{win_amount} {CURRENCY_NAME}** 獲得！"
+        elif player_score < dealer_score:
+            title = "💀 負け…"
+            color = discord.Color.red()
+            description = f"ディーラーに敗北しました...\n**{self.bet} {CURRENCY_NAME}** 没収..."
+        else:
+            win_amount = self.bet
+            title = "🤝 引き分け"
+            color = discord.Color.light_grey()
+            description = f"引き分け（プッシュ）です。\n**{win_amount} {CURRENCY_NAME}** が戻ります。"
+            
+        if win_amount > 0:
+            await database.add_balance(self.user.id, win_amount)
+            
+        embed = self.build_embed(title=title, color=color, description=description, is_final=True)
+        
+        if interaction:
+            await interaction.response.edit_message(embed=embed, view=self)
+        else:
+            try:
+                await self.message.edit(embed=embed, view=self)
+            except Exception:
+                pass
+
+class BlackjackView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+    @discord.ui.button(label="🃏 ブラックジャックで遊ぶ", style=discord.ButtonStyle.primary, custom_id="persistent_blackjack_btn")
+    async def play(self, it, btn):
+        await it.response.send_modal(BlackjackBetModal())
+
 class PanelSelect(discord.ui.Select):
     def __init__(self):
         options = [
             discord.SelectOption(label="チンチロリン", description="チンチロリンゲームのパネルを設置します", emoji="🎲", value="chinchiro"),
             discord.SelectOption(label="コイントス", description="コイントスゲームのパネルを設置します", emoji="🪙", value="coinflip"),
             discord.SelectOption(label="スロット", description="スロットゲームのパネルを設置します", emoji="🎰", value="slot"),
+            discord.SelectOption(label="ブラックジャック", description="ブラックジャックゲームのパネルを設置します", emoji="🃏", value="blackjack"),
             discord.SelectOption(label="宿屋", description="宿・高級宿の購入パネルを設置します", emoji="🛖", value="inn"),
             discord.SelectOption(label="カスタムVC", description="カスタムVCの作成パネルを設置します", emoji="✨", value="custom_vc"),
             discord.SelectOption(label="スタンプ依頼", description="スタンプ制作依頼のパネルを設置します", emoji="🎨", value="stamp"),
@@ -1162,6 +1382,10 @@ class PanelSelect(discord.ui.Select):
             embed = discord.Embed(title="🎰 スロット", description="絵柄を揃えろ！", color=discord.Color.orange())
             await channel.send(embed=embed, view=SlotView())
             await interaction.response.send_message("✅ スロットパネルを設置しました。", ephemeral=True)
+        elif val == "blackjack":
+            embed = discord.Embed(title="🃏 ブラックジャック", description="カジノへようこそ！ディーラーと勝負して21を目指そう！", color=discord.Color.dark_purple())
+            await channel.send(embed=embed, view=BlackjackView())
+            await interaction.response.send_message("✅ ブラックジャックパネルを設置しました。", ephemeral=True)
         elif val == "inn":
             embed = discord.Embed(
                 title="🏠 宿屋", 
