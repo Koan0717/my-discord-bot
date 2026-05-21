@@ -10,7 +10,7 @@ import database
 from keep_alive import keep_alive
 
 # --- 設定 ---
-CURRENCY_NAME = "コイン"
+CURRENCY_NAME = "Rune"
 JST = datetime.timezone(datetime.timedelta(hours=9))
 
 # 獲得量の設定
@@ -1654,7 +1654,7 @@ class PanelSelect(discord.ui.Select):
                     "- 勝利時: 賭け金の **2.0倍**\n"
                     "- ブラックジャック勝利時 (初期手札で21点): 賭け金の **2.5倍**\n"
                     "- 引き分け時: 賭け金を払い戻し (1.0倍)\n"
-                    "- 1プレイあたり **1 〜 100,000 コイン** までベット可能。\n"
+                    "- 1プレイあたり **1 〜 100,000 Rune** までベット可能。\n"
                     "- ※他のゲームと共通で1日10回の回数制限があります。"
                 ),
                 color=discord.Color.dark_purple()
@@ -1665,7 +1665,7 @@ class PanelSelect(discord.ui.Select):
             embed = discord.Embed(
                 title="🎡 ルーレット",
                 description=(
-                    "カジノへようこそ！ルーレットの出目を予想してコインを増やそう！\n\n"
+                    "カジノへようこそ！ルーレットの出目を予想してRuneを増やそう！\n\n"
                     "**【基本ルール】**\n"
                     "- 0〜36の計37個の数字からなるホイールが回転し、ボールが落ちた箇所が当選番号となります。\n\n"
                     "**【賭け方と配当】**\n"
@@ -1674,7 +1674,7 @@ class PanelSelect(discord.ui.Select):
                     "- **36.0倍配当**: 🎯数字1点賭け (0〜36の特定の数字)\n\n"
                     "**【注意事項】**\n"
                     "- ※当選番号が `0`（緑色）の場合、数字の0への1点賭けを除き、すべての賭け（赤黒、偶奇など）はハズレとなります。\n"
-                    "- 1プレイあたり **1 〜 100,000 コイン** までベット可能。\n"
+                    "- 1プレイあたり **1 〜 100,000 Rune** までベット可能。\n"
                     "- ※他のゲームと共通で1日10回の回数制限があります。"
                 ),
                 color=discord.Color.dark_red()
