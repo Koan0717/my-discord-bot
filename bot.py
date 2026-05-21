@@ -74,6 +74,7 @@ class EconomyBot(commands.Bot):
         self.add_view(CoinflipView())
         self.add_view(SlotView())
         self.add_view(BlackjackView())
+        self.add_view(RouletteView())
         self.add_view(InterviewPanelView())
         self.add_view(EmblemRequestPanelView())
         self.add_view(ConfessionRequestPanelView())
@@ -1339,6 +1340,256 @@ class BlackjackView(discord.ui.View):
     async def play(self, it, btn):
         await it.response.send_modal(BlackjackBetModal())
 
+def check_roulette_win(number, bet_type, target_val=None):
+    red_numbers = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
+    black_numbers = {2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35}
+    
+    if number == 0:
+        if bet_type == "number" and target_val == 0:
+            return True, 36
+        return False, 0
+
+    if bet_type == "red":
+        is_win = number in red_numbers
+        return is_win, 2 if is_win else 0
+    elif bet_type == "black":
+        is_win = number in black_numbers
+        return is_win, 2 if is_win else 0
+    elif bet_type == "even":
+        is_win = number % 2 == 0
+        return is_win, 2 if is_win else 0
+    elif bet_type == "odd":
+        is_win = number % 2 != 0
+        return is_win, 2 if is_win else 0
+    elif bet_type == "low":
+        is_win = 1 <= number <= 18
+        return is_win, 2 if is_win else 0
+    elif bet_type == "high":
+        is_win = 19 <= number <= 36
+        return is_win, 2 if is_win else 0
+    elif bet_type == "dozen1":
+        is_win = 1 <= number <= 12
+        return is_win, 3 if is_win else 0
+    elif bet_type == "dozen2":
+        is_win = 13 <= number <= 24
+        return is_win, 3 if is_win else 0
+    elif bet_type == "dozen3":
+        is_win = 25 <= number <= 36
+        return is_win, 3 if is_win else 0
+    elif bet_type == "number":
+        is_win = number == target_val
+        return is_win, 36 if is_win else 0
+        
+    return False, 0
+
+def format_bet_type(bet_type, target_num=None):
+    names = {
+        "red": "🔴 赤 (Red)",
+        "black": "⚫ 黒 (Black)",
+        "even": "🔢 偶数 (Even)",
+        "odd": "🔣 奇数 (Odd)",
+        "low": "⬇️ ロー (Low: 1-18)",
+        "high": "⬆️ ハイ (High: 19-36)",
+        "dozen1": "1️⃣ 第1ダズン (1-12)",
+        "dozen2": "2️⃣ 第2ダズン (13-24)",
+        "dozen3": "3️⃣ 第3ダズン (25-36)",
+    }
+    if bet_type == "number":
+        return f"🎯 数字 1点賭け: {target_num}"
+    return names.get(bet_type, bet_type)
+
+class RouletteBetModal(discord.ui.Modal, title='ルーレット：賭け金入力'):
+    bet_input = discord.ui.TextInput(label='賭ける金額', placeholder='例: 1000', max_length=10, required=True)
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            bet = int(self.bet_input.value)
+            if bet <= 0 or bet > 100000:
+                return await interaction.response.send_message("1〜100,000の間で入力してください。", ephemeral=True)
+            await interaction.response.defer(ephemeral=True)
+            
+            user_data = await database.get_user(interaction.user.id)
+            now = datetime.datetime.now(JST)
+            today_str = now.strftime("%Y-%m-%d")
+            count = user_data.get("chinchiro_count", 0)
+            
+            if user_data.get("chinchiro_last_date") != today_str:
+                await database.reset_gambling_count(interaction.user.id, today_str)
+                count = 0
+                
+            if count >= 10:
+                return await interaction.followup.send("本日の上限(10回)に達しました。", ephemeral=True)
+                
+            if await database.get_balance(interaction.user.id) < bet:
+                return await interaction.followup.send("残高不足です。", ephemeral=True)
+            
+            view = RouletteBetTypeView(interaction.user, bet, count)
+            embed = discord.Embed(
+                title="🎡 ルーレット",
+                description=(
+                    f"**現在のベット額**: {bet} {CURRENCY_NAME}\n\n"
+                    "賭け先を以下から選択してください。\n"
+                    "- 赤 / 黒 / 偶数 / 奇数 / ロー / ハイ: **配当2.0倍**\n"
+                    "- ダズン (1-12, 13-24, 25-36): **配当3.0倍**\n"
+                    "- 数字1点賭け (0-36): **配当36.0倍**"
+                ),
+                color=0x3498db
+            )
+            msg = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            view.message = msg
+        except ValueError:
+            await interaction.followup.send("金額は半角数字で入力してください。", ephemeral=True)
+        except Exception as e:
+            print(f"[ERROR] RouletteBetModal: {e}")
+
+class RouletteBetTypeView(discord.ui.View):
+    def __init__(self, user, bet, count):
+        super().__init__(timeout=60)
+        self.user = user
+        self.bet = bet
+        self.count = count
+        self.message = None
+        self.add_item(RouletteTypeSelect())
+
+    @discord.ui.button(label="🎯 数字1点賭け (0-36)", style=discord.ButtonStyle.secondary, row=1)
+    async def bet_number_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user != self.user:
+            return await interaction.response.send_message("これはあなたのゲームではありません。", ephemeral=True)
+        await interaction.response.send_modal(RouletteNumberModal(self.bet, self.count, self.message))
+
+class RouletteTypeSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="🔴 赤に賭ける", description="配当 2.0倍", value="red"),
+            discord.SelectOption(label="⚫ 黒に賭ける", description="配当 2.0倍", value="black"),
+            discord.SelectOption(label="🔢 偶数に賭ける", description="配当 2.0倍 (0は除く)", value="even"),
+            discord.SelectOption(label="🔣 奇数に賭ける", description="配当 2.0倍", value="odd"),
+            discord.SelectOption(label="⬇️ ローに賭ける (1-18)", description="配当 2.0倍", value="low"),
+            discord.SelectOption(label="⬆️ ハイに賭ける (19-36)", description="配当 2.0倍", value="high"),
+            discord.SelectOption(label="1️⃣ 第1ダズン (1-12)", description="配当 3.0倍", value="dozen1"),
+            discord.SelectOption(label="2️⃣ 第2ダズン (13-24)", description="配当 3.0倍", value="dozen2"),
+            discord.SelectOption(label="3️⃣ 第3ダズン (25-36)", description="配当 3.0倍", value="dozen3"),
+        ]
+        super().__init__(placeholder="賭け先を選択してください...", min_values=1, max_values=1, options=options, row=0)
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if interaction.user != view.user:
+            return await interaction.response.send_message("これはあなたのゲームではありません。", ephemeral=True)
+        await run_roulette_game(interaction, view.user, view.bet, view.count, self.values[0], None)
+
+class RouletteNumberModal(discord.ui.Modal, title='ルーレット：数字1点賭け'):
+    number_input = discord.ui.TextInput(label='賭ける数字 (0〜36)', placeholder='例: 7', max_length=2, required=True)
+    def __init__(self, bet, count, game_msg):
+        super().__init__()
+        self.bet = bet
+        self.count = count
+        self.game_msg = game_msg
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            target_num = int(self.number_input.value)
+            if target_num < 0 or target_num > 36:
+                return await interaction.response.send_message("0から36の間の数字を入力してください。", ephemeral=True)
+            await interaction.response.defer(ephemeral=True)
+            await run_roulette_game(interaction, interaction.user, self.bet, self.count, "number", target_num)
+        except ValueError:
+            await interaction.response.send_message("数字は半角で入力してください。", ephemeral=True)
+
+async def run_roulette_game(interaction: discord.Interaction, user, bet, count, bet_type, target_num):
+    user_data = await database.get_user(user.id)
+    now = datetime.datetime.now(JST)
+    today_str = now.strftime("%Y-%m-%d")
+    current_count = user_data.get("chinchiro_count", 0)
+    
+    if user_data.get("chinchiro_last_date") != today_str:
+        await database.reset_gambling_count(user.id, today_str)
+        current_count = 0
+        
+    if current_count >= 10:
+        try:
+            await interaction.followup.send("本日の上限(10回)に達しました。", ephemeral=True)
+        except Exception:
+            await interaction.response.send_message("本日の上限(10回)に達しました。", ephemeral=True)
+        return
+        
+    if not await database.remove_balance(user.id, bet):
+        try:
+            await interaction.followup.send("残高不足です。", ephemeral=True)
+        except Exception:
+            await interaction.response.send_message("残高不足です。", ephemeral=True)
+        return
+        
+    await database.increment_gambling_count(user.id)
+    
+    red_numbers = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
+    
+    def get_color_emoji(n):
+        if n == 0:
+            return "🟢0"
+        return f"🔴{n}" if n in red_numbers else f"⚫{n}"
+        
+    spin_sequence = []
+    for _ in range(5):
+        dummy_num = random.randint(0, 36)
+        spin_sequence.append(get_color_emoji(dummy_num))
+        
+    final_number = random.randint(0, 36)
+    
+    embed = discord.Embed(
+        title="🎡 ルーレット回転中...",
+        description=f"賭け先: **{format_bet_type(bet_type, target_num)}**\n賭け金: **{bet} {CURRENCY_NAME}**\n\n"
+                    f"spinning: [ {' ➔ '.join(spin_sequence[:3])} ]",
+        color=0x3498db
+    )
+    
+    if not interaction.is_expired():
+        try:
+            await interaction.response.edit_message(embed=embed, view=None)
+        except discord.InteractionResponded:
+            await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=None)
+    else:
+        await interaction.channel.send(embed=embed)
+        
+    await asyncio.sleep(1.2)
+    
+    embed.title = "🎡 ルーレット減速中..."
+    embed.description = f"賭け先: **{format_bet_type(bet_type, target_num)}**\n賭け金: **{bet} {CURRENCY_NAME}**\n\n" \
+                        f"spinning: [ {' ➔ '.join(spin_sequence[2:])} ➔ ??? ]"
+    
+    await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed)
+    
+    await asyncio.sleep(1.2)
+    
+    is_win, multiplier = check_roulette_win(final_number, bet_type, target_num)
+    win_amount = int(bet * multiplier) if is_win else 0
+    
+    if win_amount > 0:
+        await database.add_balance(user.id, win_amount)
+        
+    color_emoji = get_color_emoji(final_number)
+    if is_win:
+        title = "🏆 当たり！"
+        color = discord.Color.gold()
+        desc = f"結果: **{color_emoji}**\n賭け先: **{format_bet_type(bet_type, target_num)}**\n\n" \
+               f"見事に的中しました！\n**{win_amount} {CURRENCY_NAME}** 獲得！"
+    else:
+        title = "💀 ハズレ…"
+        color = discord.Color.red()
+        desc = f"結果: **{color_emoji}**\n賭け先: **{format_bet_type(bet_type, target_num)}**\n\n" \
+               f"残念、ハズレです...\n**{bet} {CURRENCY_NAME}** 没収。"
+               
+    embed = discord.Embed(title=title, description=desc, color=color)
+    embed.set_footer(text=f"本日 {current_count+1}/10回目")
+    
+    await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed)
+
+class RouletteView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+    @discord.ui.button(label="🎡 ルーレットで遊ぶ", style=discord.ButtonStyle.primary, custom_id="persistent_roulette_btn")
+    async def play(self, it, btn):
+        await it.response.send_modal(RouletteBetModal())
+
 class PanelSelect(discord.ui.Select):
     def __init__(self):
         options = [
@@ -1346,6 +1597,7 @@ class PanelSelect(discord.ui.Select):
             discord.SelectOption(label="コイントス", description="コイントスゲームのパネルを設置します", emoji="🪙", value="coinflip"),
             discord.SelectOption(label="スロット", description="スロットゲームのパネルを設置します", emoji="🎰", value="slot"),
             discord.SelectOption(label="ブラックジャック", description="ブラックジャックゲームのパネルを設置します", emoji="🃏", value="blackjack"),
+            discord.SelectOption(label="ルーレット", description="ルーレットゲームのパネルを設置します", emoji="🎡", value="roulette"),
             discord.SelectOption(label="宿屋", description="宿・高級宿の購入パネルを設置します", emoji="🛖", value="inn"),
             discord.SelectOption(label="カスタムVC", description="カスタムVCの作成パネルを設置します", emoji="✨", value="custom_vc"),
             discord.SelectOption(label="スタンプ依頼", description="スタンプ制作依頼のパネルを設置します", emoji="🎨", value="stamp"),
@@ -1383,9 +1635,52 @@ class PanelSelect(discord.ui.Select):
             await channel.send(embed=embed, view=SlotView())
             await interaction.response.send_message("✅ スロットパネルを設置しました。", ephemeral=True)
         elif val == "blackjack":
-            embed = discord.Embed(title="🃏 ブラックジャック", description="カジノへようこそ！ディーラーと勝負して21を目指そう！", color=discord.Color.dark_purple())
+            embed = discord.Embed(
+                title="🃏 ブラックジャック",
+                description=(
+                    "カジノへようこそ！ディーラーと勝負して21を目指そう！\n\n"
+                    "**【基本ルール】**\n"
+                    "- 配られたカードの合計値が **21** に近い方が勝利となります。\n"
+                    "- 合計値が **21 を超えると敗北 (Bust)** となります。\n\n"
+                    "**【カードの数え方】**\n"
+                    "- `2`〜`10`: そのままの数字で計算します。\n"
+                    "- `J`, `Q`, `K`: すべて `10` として計算します。\n"
+                    "- `A`: `1` または `11` の都合が良い方の値で自動計算されます。\n\n"
+                    "**【操作方法】**\n"
+                    "- **「カードを引く (Hit)」**: 手札にカードを1枚追加します。\n"
+                    "- **「勝負する (Stand)」**: 現在の手札でディーラーと勝負します。\n"
+                    "- ※ディーラーは手札の合計が **17 以上になるまで** 自動でカードを引き続けます。\n\n"
+                    "**【配当と制限】**\n"
+                    "- 勝利時: 賭け金の **2.0倍**\n"
+                    "- ブラックジャック勝利時 (初期手札で21点): 賭け金の **2.5倍**\n"
+                    "- 引き分け時: 賭け金を払い戻し (1.0倍)\n"
+                    "- 1プレイあたり **1 〜 100,000 コイン** までベット可能。\n"
+                    "- ※他のゲームと共通で1日10回の回数制限があります。"
+                ),
+                color=discord.Color.dark_purple()
+            )
             await channel.send(embed=embed, view=BlackjackView())
             await interaction.response.send_message("✅ ブラックジャックパネルを設置しました。", ephemeral=True)
+        elif val == "roulette":
+            embed = discord.Embed(
+                title="🎡 ルーレット",
+                description=(
+                    "カジノへようこそ！ルーレットの出目を予想してコインを増やそう！\n\n"
+                    "**【基本ルール】**\n"
+                    "- 0〜36の計37個の数字からなるホイールが回転し、ボールが落ちた箇所が当選番号となります。\n\n"
+                    "**【賭け方と配当】**\n"
+                    "- **2.0倍配当**: 🔴赤 / ⚫黒 / 🔢偶数 / 🔣奇数 / ⬇️ロー (1-18) / ⬆️ハイ (19-36)\n"
+                    "- **3.0倍配当**: ダズン (1-12 / 13-24 / 25-36)\n"
+                    "- **36.0倍配当**: 🎯数字1点賭け (0〜36の特定の数字)\n\n"
+                    "**【注意事項】**\n"
+                    "- ※当選番号が `0`（緑色）の場合、数字の0への1点賭けを除き、すべての賭け（赤黒、偶奇など）はハズレとなります。\n"
+                    "- 1プレイあたり **1 〜 100,000 コイン** までベット可能。\n"
+                    "- ※他のゲームと共通で1日10回の回数制限があります。"
+                ),
+                color=discord.Color.dark_red()
+            )
+            await channel.send(embed=embed, view=RouletteView())
+            await interaction.response.send_message("✅ ルーレットパネルを設置しました。", ephemeral=True)
         elif val == "inn":
             embed = discord.Embed(
                 title="🏠 宿屋", 
