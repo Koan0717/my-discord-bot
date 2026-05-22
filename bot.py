@@ -1039,7 +1039,7 @@ class ChinchiroGameView(discord.ui.View):
         bd, pd = [random.randint(1,6) for _ in range(3)], [random.randint(1,6) for _ in range(3)]
         bh, br = get_rank(bd); ph, pr = get_rank(pd)
         if pr > br:
-            mul = 5 if ph=="ピンゾロ" else (3 if "アラシ" in ph else (2 if ph=="シゴロ" else (0.5 if "出目" in ph else 0)))
+            mul = 9 if ph=="ピンゾロ" else (4 if "アラシ" in ph else (2 if ph=="シゴロ" else (1 if "出目" in ph else 0)))
             await database.add_balance(self.user.id, int(self.bet*(1+mul)))
             res, color = f"🏆 勝ち！ {int(self.bet*mul)} {CURRENCY_NAME} 獲得", discord.Color.gold()
         elif pr < br: res, color = "💀 負け…", discord.Color.red()
@@ -1079,8 +1079,8 @@ class CoinflipGameView(discord.ui.View):
         await database.increment_gambling_count(self.user.id)
         res = random.choice(["heads", "tails"])
         if choice == res:
-            await database.add_balance(self.user.id, int(self.bet*1.8))
-            msg, color = f"🏆 当たり！ {int(self.bet*1.8)} {CURRENCY_NAME} 獲得", discord.Color.gold()
+            await database.add_balance(self.user.id, int(self.bet*2.0))
+            msg, color = f"🏆 当たり！ {int(self.bet*2.0)} {CURRENCY_NAME} 獲得", discord.Color.gold()
         else: msg, color = f"💀 外れ… {self.bet} {CURRENCY_NAME} 没収", discord.Color.red()
         await it.response.edit_message(content=None, embed=discord.Embed(title="🪙 結果", description=f"結果: {'表' if res=='heads' else '裏'}\n{msg}", color=color), view=None)
     @discord.ui.button(label="表", emoji="⚪")
@@ -1110,7 +1110,7 @@ class SlotBetModal(discord.ui.Modal, title='スロット：賭け金入力'):
             await database.increment_gambling_count(it.user.id)
             emo = ["🍒", "🍋", "🍉", "🔔", "⭐", "7️⃣", "💎", "🍀"]
             r = [random.choice(emo) for _ in range(3)]
-            mul = 15 if r[0]==r[1]==r[2]=="7️⃣" else (10 if r[0]==r[1]==r[2]=="⭐" else (5 if r[0]==r[1]==r[2]=="💎" else (3 if r[0]==r[1]==r[2] else (1.0 if len(set(r))<3 else 0))))
+            mul = 10 if r[0]==r[1]==r[2]=="7️⃣" else (5 if r[0]==r[1]==r[2]=="⭐" else (3 if r[0]==r[1]==r[2] else (1.5 if len(set(r))<3 else 0)))
             win = int(bet * mul)
             if win > 0: await database.add_balance(it.user.id, win)
             embed = discord.Embed(title="🎰 スロット結果", description=f"{r}\n{'🏆 当たり！' if win>0 else '💀 ハズレ'} {win} 獲得", color=discord.Color.gold() if win>0 else discord.Color.red())
