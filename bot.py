@@ -62,9 +62,16 @@ class EconomyBot(commands.Bot):
         self.tc_xp_cooldowns = {}   # {user_id: timestamp} (経験値用)
         self.vc_sessions = {}       # {user_id: join_timestamp}
         self.empty_custom_vcs = {}  # {channel_id: empty_since_timestamp}
+        self.auto_vc_triggers = set()
 
     async def setup_hook(self):
         await database.setup_db()
+        # VC作成トリガーの読み込みとマイグレーション
+        self.auto_vc_triggers = set(await database.get_auto_vc_triggers())
+        if not self.auto_vc_triggers:
+            await database.add_auto_vc_trigger(CREATE_VC_CHANNEL_ID)
+            self.auto_vc_triggers.add(CREATE_VC_CHANNEL_ID)
+
         self.add_view(RoomView())
         self.add_view(CustomRoomView())
         self.add_view(InnControlView())
@@ -81,6 +88,7 @@ class EconomyBot(commands.Bot):
         self.add_view(TicketControlView())
         self.add_view(VCRenamePanelView())
         self.add_view(PanelSetupView())
+        self.add_view(InquiryRequestPanelView())
         
         # グループの登録
         self.tree.add_command(AdminGroup())
@@ -253,7 +261,8 @@ async def on_voice_state_update(member, before, after):
                     print(f"[VC XP] Started session for {member.display_name}")
                     bot.vc_sessions[user_id] = now_aware
             
-            if after.channel.id == CREATE_VC_CHANNEL_ID:
+            if after.channel.id in bot.auto_vc_triggers:
+                trigger_id = after.channel.id
                 try:
                     pool = await database.get_pool()
                     async with pool.acquire() as conn:
@@ -267,7 +276,7 @@ async def on_voice_state_update(member, before, after):
                         
                         if existing_channel:
                             await asyncio.sleep(0.3)
-                            if member.voice and member.voice.channel and member.voice.channel.id == CREATE_VC_CHANNEL_ID:
+                            if member.voice and member.voice.channel and member.voice.channel.id == trigger_id:
                                 await member.move_to(existing_channel)
                             return
                         else:
@@ -287,7 +296,7 @@ async def on_voice_state_update(member, before, after):
                                 far_future = now_naive + datetime.timedelta(days=36500)
                                 await database.add_room(existing_ch.id, member.id, "一時部屋", far_future)
                                 await asyncio.sleep(0.3)
-                                if member.voice and member.voice.channel and member.voice.channel.id == CREATE_VC_CHANNEL_ID:
+                                if member.voice and member.voice.channel and member.voice.channel.id == trigger_id:
                                     await member.move_to(existing_ch)
                                 return
                     new_channel = await guild.create_voice_channel(
@@ -313,7 +322,7 @@ async def on_voice_state_update(member, before, after):
                     # ユーザーを移動 (複数回試行)
                     for i in range(3):
                         await asyncio.sleep(0.5 if i == 0 else 1.0)
-                        if member.voice and member.voice.channel and member.voice.channel.id == CREATE_VC_CHANNEL_ID:
+                        if member.voice and member.voice.channel and member.voice.channel.id == trigger_id:
                             try:
                                 await member.move_to(new_channel)
                                 print(f"[Auto-VC] Successfully moved {member.display_name} on attempt {i+1}")
@@ -366,6 +375,9 @@ async def on_guild_channel_delete(channel):
     if room_data:
         await database.remove_room(channel.id)
         bot.empty_custom_vcs.pop(channel.id, None)
+    
+    # お問い合わせパネルが削除された場合、データベースから削除する
+    await database.remove_inquiry_panel(channel.id)
 
 @bot.event
 async def on_member_update(before, after):
@@ -910,6 +922,146 @@ class ConfessionRequestPanelView(discord.ui.View):
     async def request_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         view = ConfessionSelectView(interaction.guild)
         await interaction.response.send_message("担当者を選択してください：", view=view, ephemeral=True)
+
+
+
+# --- お問い合わせチケットシステム ---
+
+class InquiryRequestModal(discord.ui.Modal, title="お問い合わせ"):
+    subject = discord.ui.TextInput(
+        label="件名",
+        placeholder="例: ○○について質問",
+        max_length=100,
+        required=True
+    )
+    details = discord.ui.TextInput(
+        label="内容",
+        style=discord.TextStyle.paragraph,
+        placeholder="お問い合わせ内容の具体的な詳細をご記入ください。",
+        required=True,
+        max_length=1000
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        
+        # 通知先ロールIDをDBから取得
+        role_id = await database.get_inquiry_panel_role(interaction.channel.id)
+        mention_role = guild.get_role(role_id) if role_id else None
+        
+        # チケット番号の決定 (空いている最小の番号を探す)
+        current_ticket_nums = []
+        for c in guild.channels:
+            if c.name.startswith("inquiry-"):
+                try:
+                    num = int(c.name.split("-")[1])
+                    current_ticket_nums.append(num)
+                except:
+                    pass
+        
+        ticket_num = 1
+        while ticket_num in current_ticket_nums:
+            ticket_num += 1
+            
+        channel_name = f"inquiry-{ticket_num:03d}"
+        
+        # 権限設定
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        }
+        
+        # 管理者ロールと通知先ロールに権限を付与
+        for role_name in ADMIN_ROLE_NAMES:
+            role = discord.utils.get(guild.roles, name=role_name)
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        
+        if mention_role:
+            overwrites[mention_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+
+        try:
+            # チャンネル作成
+            category = interaction.channel.category
+            ticket_channel = await guild.create_text_channel(
+                name=channel_name,
+                category=category,
+                overwrites=overwrites,
+                reason=f"Inquiry ticket for {interaction.user.display_name}"
+            )
+            
+            # チケット内での案内メッセージ
+            embed = discord.Embed(
+                title="✉️ お問い合わせチケット",
+                description=(
+                    f"**件名:** {self.subject.value}\n\n"
+                    f"**内容:**\n{self.details.value}\n\n"
+                    f"**作成者:** {interaction.user.mention}\n\n"
+                    "内容の確認はこちらのチャンネルで行ってください。\n"
+                    "完了したら下のボタンでチケットを閉じることができます。"
+                ),
+                color=discord.Color.blue()
+            )
+            
+            mention_str = f"{interaction.user.mention}"
+            if mention_role:
+                mention_str += f" {mention_role.mention}"
+            else:
+                mentions = []
+                for role_name in ADMIN_ROLE_NAMES:
+                    role = discord.utils.get(guild.roles, name=role_name)
+                    if role: mentions.append(role.mention)
+                if mentions:
+                    mention_str += " " + " ".join(mentions)
+
+            await ticket_channel.send(content=mention_str, embed=embed, view=TicketControlView())
+            await interaction.followup.send(f"✅ お問い合わせチケットを作成しました: {ticket_channel.mention}", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"エラーが発生しました: {e}", ephemeral=True)
+
+class InquiryRequestPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="お問い合わせチケットを作成", style=discord.ButtonStyle.primary, emoji="✉️", custom_id="persistent_inquiry_req_btn")
+    async def request_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(InquiryRequestModal())
+
+class InquirySetupRoleSelect(discord.ui.RoleSelect):
+    def __init__(self):
+        super().__init__(
+            placeholder="通知先（メンション）ロールを選択...",
+            min_values=1,
+            max_values=1
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        role = self.values[0]
+        channel = interaction.channel
+        
+        # DBに保存
+        await database.add_inquiry_panel(channel.id, role.id)
+        
+        # チャンネルにお問い合わせボタン付きEmbedを送信
+        embed = discord.Embed(
+            title="✉️ お問い合わせ窓口",
+            description=(
+                "お問い合わせやご相談はこちらのボタンからチケットを作成してください。\n\n"
+                "ボタンを押すと「件名」と「内容」の入力画面が開きます。"
+            ),
+            color=discord.Color.blue()
+        )
+        await channel.send(embed=embed, view=InquiryRequestPanelView())
+        
+        # 管理者に完了を通知
+        await interaction.followup.send(f"✅ お問い合わせパネルを設置し、通知先ロールを {role.mention} に設定しました。", ephemeral=True)
+
+class InquirySetupView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=180)
+        self.add_item(InquirySetupRoleSelect())
 
 
 class TicketControlView(discord.ui.View):
@@ -1603,7 +1755,8 @@ class PanelSelect(discord.ui.Select):
             discord.SelectOption(label="スタンプ依頼", description="スタンプ制作依頼のパネルを設置します", emoji="🎨", value="stamp"),
             discord.SelectOption(label="告解・相談室", description="告解・相談依頼のパネルを設置します", emoji="⛪", value="confession"),
             discord.SelectOption(label="VC管理", description="VC名・人数制限変更のパネルを設置します", emoji="⚙️", value="vc_manage"),
-            discord.SelectOption(label="入界手続き", description="新規メンバーの入界手続きパネルを設置します", emoji="📝", value="interview")
+            discord.SelectOption(label="入界手続き", description="新規メンバーの入界手続きパネルを設置します", emoji="📝", value="interview"),
+            discord.SelectOption(label="お問い合わせ", description="お問い合わせ作成パネルを設置します", emoji="✉️", value="inquiry")
         ]
         super().__init__(placeholder="設置するパネルを選択してください...", min_values=1, max_values=1, options=options, custom_id="admin_panel_setup_select")
 
@@ -1739,11 +1892,146 @@ class PanelSelect(discord.ui.Select):
             embed = discord.Embed(title="✨ 入界手続き", description="下のボタンから登録してください。", color=discord.Color.green())
             await channel.send(embed=embed, view=InterviewPanelView())
             await interaction.response.send_message("✅ 入界手続きパネルを設置しました。", ephemeral=True)
+        elif val == "inquiry":
+            embed = discord.Embed(
+                title="✉️ お問い合わせ設定",
+                description="お問い合わせの際に通知（メンション）するロールを選択してください。",
+                color=discord.Color.blue()
+            )
+            await interaction.response.send_message(embed=embed, view=InquirySetupView(), ephemeral=True)
+
+# --- VC作成トリガー管理パネル用UI ---
+
+async def update_config_view(interaction: discord.Interaction, bot):
+    view = VCTriggersConfigView(bot)
+    
+    embed = discord.Embed(
+        title="🎙️ VC作成トリガー設定パネル",
+        description=(
+            "ユーザーが参加した際に一時部屋を自動作成するチャンネルを設定できます。\n\n"
+            "**【追加】** 下のドロップダウンからボイスチャンネルを選択してください。\n"
+            "**【削除】** 登録済みのチャンネルを削除するには、削除用ドロップダウンを使用してください。"
+        ),
+        color=discord.Color.blue()
+    )
+    
+    triggers_str = ""
+    for tid in bot.auto_vc_triggers:
+        ch = bot.get_channel(tid)
+        if ch:
+            triggers_str += f"• {ch.mention} (ID: `{tid}`)\n"
+        else:
+            triggers_str += f"• ⚠️ 不明なチャンネル (ID: `{tid}`)\n"
+    if not triggers_str:
+        triggers_str = "登録されているトリガーチャンネルはありません。"
+    embed.add_field(name="現在の登録チャンネル", value=triggers_str, inline=False)
+    
+    await interaction.response.edit_message(embed=embed, view=view)
+
+class AddVCTriggerSelect(discord.ui.ChannelSelect):
+    def __init__(self):
+        super().__init__(
+            placeholder="追加するボイスチャンネルを選択...",
+            channel_types=[discord.ChannelType.voice],
+            min_values=1,
+            max_values=1,
+            row=0
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        bot = interaction.client
+        channel = self.values[0]
+        
+        if channel.id in bot.auto_vc_triggers:
+            return await interaction.response.send_message(f"❌ {channel.mention} は既に登録されています。", ephemeral=True)
+            
+        await database.add_auto_vc_trigger(channel.id)
+        bot.auto_vc_triggers.add(channel.id)
+        
+        await update_config_view(interaction, bot)
+
+class RemoveVCTriggerSelect(discord.ui.Select):
+    def __init__(self, bot):
+        options = []
+        for tid in bot.auto_vc_triggers:
+            ch = bot.get_channel(tid)
+            name = ch.name if ch else f"不明なチャンネル ({tid})"
+            options.append(discord.SelectOption(
+                label=name,
+                value=str(tid),
+                description=f"ID: {tid}"
+            ))
+        super().__init__(
+            placeholder="削除するトリガーチャンネルを選択...",
+            min_values=1,
+            max_values=1,
+            options=options[:25],
+            row=1
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        bot = interaction.client
+        channel_id = int(self.values[0])
+        
+        if channel_id not in bot.auto_vc_triggers:
+            return await interaction.response.send_message(f"❌ そのチャンネルは登録されていません。", ephemeral=True)
+            
+        await database.remove_auto_vc_trigger(channel_id)
+        bot.auto_vc_triggers.discard(channel_id)
+        
+        await update_config_view(interaction, bot)
+
+class VCTriggersConfigView(discord.ui.View):
+    def __init__(self, bot):
+        super().__init__(timeout=180)
+        self.add_item(AddVCTriggerSelect())
+        if bot.auto_vc_triggers:
+            self.add_item(RemoveVCTriggerSelect(bot))
+
+class ManageVCTriggersButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="VC作成トリガーを設定",
+            style=discord.ButtonStyle.secondary,
+            emoji="🎙️",
+            custom_id="persistent_admin_manage_vc_triggers_btn"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not has_admin_role(interaction.user) and not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("この操作を実行する権限がありません（運営専用）。", ephemeral=True)
+
+        bot = interaction.client
+        view = VCTriggersConfigView(bot)
+        
+        embed = discord.Embed(
+            title="🎙️ VC作成トリガー設定パネル",
+            description=(
+                "ユーザーが参加した際に一時部屋を自動作成するチャンネルを設定できます。\n\n"
+                "**【追加】** 下のドロップダウンからボイスチャンネルを選択してください。\n"
+                "**【削除】** 登録済みのチャンネルを削除するには、削除用ドロップダウンを使用してください。"
+            ),
+            color=discord.Color.blue()
+        )
+        
+        triggers_str = ""
+        for tid in bot.auto_vc_triggers:
+            ch = bot.get_channel(tid)
+            if ch:
+                triggers_str += f"• {ch.mention} (ID: `{tid}`)\n"
+            else:
+                triggers_str += f"• ⚠️ 不明なチャンネル (ID: `{tid}`)\n"
+        if not triggers_str:
+            triggers_str = "登録されているトリガーチャンネルはありません。"
+        embed.add_field(name="現在の登録チャンネル", value=triggers_str, inline=False)
+
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 class PanelSetupView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
         self.add_item(PanelSelect())
+        self.add_item(ManageVCTriggersButton())
 
 class AdminGroup(app_commands.Group):
     def __init__(self): super().__init__(name="管理者", description="【管理者専用】管理コマンド")
@@ -1800,6 +2088,23 @@ class AdminGroup(app_commands.Group):
                 f"紋章師ロール: **{EMBLEM_MANAGER_ROLE_NAME}**, **{EMBLEM_MASTER_ROLE_NAME}**\n"
                 f"司祭ロール: **{CONFESSION_PRIEST_ROLE_NAME}**, **{PRIEST_ROLE_NAME}**"
             ),
+            inline=False
+        )
+        
+        # VC作成トリガー
+        triggers_str = ""
+        for tid in interaction.client.auto_vc_triggers:
+            ch = interaction.client.get_channel(tid)
+            if ch:
+                triggers_str += f"• {ch.mention} (ID: `{tid}`)\n"
+            else:
+                triggers_str += f"• ⚠️ 不明なチャンネル (ID: `{tid}`)\n"
+        if not triggers_str:
+            triggers_str = "登録されているトリガーチャンネルはありません。"
+            
+        embed.add_field(
+            name="🎙️ VC作成トリガー設定",
+            value=triggers_str,
             inline=False
         )
         

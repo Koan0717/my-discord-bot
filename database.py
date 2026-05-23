@@ -51,6 +51,17 @@ async def setup_db():
                 end_time TIMESTAMP
             )
         ''')
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS auto_vc_triggers (
+                channel_id BIGINT PRIMARY KEY
+            )
+        ''')
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS inquiry_panels (
+                channel_id BIGINT PRIMARY KEY,
+                mention_role_id BIGINT
+            )
+        ''')
 
 async def get_user(user_id: int):
     p = await get_pool()
@@ -220,3 +231,44 @@ async def extend_evaluation_period(user_id: int, extra_days: int) -> bool:
         new_end_time = row['end_time'] + datetime.timedelta(days=extra_days)
         await conn.execute('UPDATE evaluation_periods SET end_time = $1 WHERE user_id = $2', new_end_time, user_id)
         return True
+
+# --- VC作成トリガー管理用関数 ---
+async def add_auto_vc_trigger(channel_id: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('INSERT INTO auto_vc_triggers (channel_id) VALUES ($1) ON CONFLICT (channel_id) DO NOTHING', channel_id)
+
+async def remove_auto_vc_trigger(channel_id: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('DELETE FROM auto_vc_triggers WHERE channel_id = $1', channel_id)
+
+async def get_auto_vc_triggers() -> list[int]:
+    p = await get_pool()
+    async with p.acquire() as conn:
+        rows = await conn.fetch('SELECT channel_id FROM auto_vc_triggers')
+        return [row['channel_id'] for row in rows]
+
+# --- お問い合わせパネル管理用関数 ---
+async def add_inquiry_panel(channel_id: int, mention_role_id: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO inquiry_panels (channel_id, mention_role_id) 
+            VALUES ($1, $2) 
+            ON CONFLICT (channel_id) 
+            DO UPDATE SET mention_role_id = $2
+        ''', channel_id, mention_role_id)
+
+async def get_inquiry_panel_role(channel_id: int) -> int | None:
+    p = await get_pool()
+    async with p.acquire() as conn:
+        row = await conn.fetchrow('SELECT mention_role_id FROM inquiry_panels WHERE channel_id = $1', channel_id)
+        if row:
+            return row['mention_role_id']
+        return None
+
+async def remove_inquiry_panel(channel_id: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('DELETE FROM inquiry_panels WHERE channel_id = $1', channel_id)
