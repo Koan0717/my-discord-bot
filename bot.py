@@ -947,8 +947,9 @@ class InquiryRequestModal(discord.ui.Modal, title="お問い合わせ"):
         guild = interaction.guild
         
         # 通知先ロールIDをDBから取得
-        role_id = await database.get_inquiry_panel_role(interaction.channel.id)
-        mention_role = guild.get_role(role_id) if role_id else None
+        role_ids = await database.get_inquiry_panel_roles(interaction.channel.id)
+        mention_roles = [guild.get_role(rid) for rid in role_ids]
+        mention_roles = [r for r in mention_roles if r is not None]
         
         # チケット番号の決定 (空いている最小の番号を探す)
         current_ticket_nums = []
@@ -978,8 +979,8 @@ class InquiryRequestModal(discord.ui.Modal, title="お問い合わせ"):
             if role:
                 overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
         
-        if mention_role:
-            overwrites[mention_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        for m_role in mention_roles:
+            overwrites[m_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
 
         try:
             # チャンネル作成
@@ -1005,8 +1006,8 @@ class InquiryRequestModal(discord.ui.Modal, title="お問い合わせ"):
             )
             
             mention_str = f"{interaction.user.mention}"
-            if mention_role:
-                mention_str += f" {mention_role.mention}"
+            if mention_roles:
+                mention_str += " " + " ".join([r.mention for r in mention_roles])
             else:
                 mentions = []
                 for role_name in ADMIN_ROLE_NAMES:
@@ -1033,16 +1034,16 @@ class InquirySetupRoleSelect(discord.ui.RoleSelect):
         super().__init__(
             placeholder="通知先（メンション）ロールを選択...",
             min_values=1,
-            max_values=1
+            max_values=10
         )
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        role = self.values[0]
+        roles = self.values
         channel = interaction.channel
         
         # DBに保存
-        await database.add_inquiry_panel(channel.id, role.id)
+        await database.add_inquiry_panel(channel.id, [r.id for r in roles])
         
         # チャンネルにお問い合わせボタン付きEmbedを送信
         embed = discord.Embed(
@@ -1056,7 +1057,8 @@ class InquirySetupRoleSelect(discord.ui.RoleSelect):
         await channel.send(embed=embed, view=InquiryRequestPanelView())
         
         # 管理者に完了を通知
-        await interaction.followup.send(f"✅ お問い合わせパネルを設置し、通知先ロールを {role.mention} に設定しました。", ephemeral=True)
+        mentions_str = ", ".join([r.mention for r in roles])
+        await interaction.followup.send(f"✅ お問い合わせパネルを設置し、通知先ロールを {mentions_str} に設定しました。", ephemeral=True)
 
 class InquirySetupView(discord.ui.View):
     def __init__(self):

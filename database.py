@@ -59,9 +59,14 @@ async def setup_db():
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS inquiry_panels (
                 channel_id BIGINT PRIMARY KEY,
-                mention_role_id BIGINT
+                mention_role_id BIGINT,
+                mention_role_ids BIGINT[]
             )
         ''')
+        try:
+            await conn.execute('ALTER TABLE inquiry_panels ADD COLUMN IF NOT EXISTS mention_role_ids BIGINT[]')
+        except Exception as e:
+            print(f"[Migration] inquiry_panels migration warning: {e}")
 
 async def get_user(user_id: int):
     p = await get_pool()
@@ -250,23 +255,26 @@ async def get_auto_vc_triggers() -> list[int]:
         return [row['channel_id'] for row in rows]
 
 # --- お問い合わせパネル管理用関数 ---
-async def add_inquiry_panel(channel_id: int, mention_role_id: int):
+async def add_inquiry_panel(channel_id: int, mention_role_ids: list[int]):
     p = await get_pool()
     async with p.acquire() as conn:
         await conn.execute('''
-            INSERT INTO inquiry_panels (channel_id, mention_role_id) 
+            INSERT INTO inquiry_panels (channel_id, mention_role_ids) 
             VALUES ($1, $2) 
             ON CONFLICT (channel_id) 
-            DO UPDATE SET mention_role_id = $2
-        ''', channel_id, mention_role_id)
+            DO UPDATE SET mention_role_ids = $2
+        ''', channel_id, mention_role_ids)
 
-async def get_inquiry_panel_role(channel_id: int) -> int | None:
+async def get_inquiry_panel_roles(channel_id: int) -> list[int]:
     p = await get_pool()
     async with p.acquire() as conn:
-        row = await conn.fetchrow('SELECT mention_role_id FROM inquiry_panels WHERE channel_id = $1', channel_id)
+        row = await conn.fetchrow('SELECT mention_role_ids, mention_role_id FROM inquiry_panels WHERE channel_id = $1', channel_id)
         if row:
-            return row['mention_role_id']
-        return None
+            if row['mention_role_ids'] is not None:
+                return row['mention_role_ids']
+            elif row['mention_role_id'] is not None:
+                return [row['mention_role_id']]
+        return []
 
 async def remove_inquiry_panel(channel_id: int):
     p = await get_pool()
