@@ -60,6 +60,14 @@ EVALUATION_FORUM_CHANNEL_ID = 1503360808669806713
 load_dotenv()
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
+def format_evaluation_datetime(dt: datetime.datetime) -> str:
+    if not dt:
+        return "データなし"
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(JST)
+    weekday_ja = ["月", "火", "水", "木", "金", "土", "日"][dt.weekday()]
+    return dt.strftime(f"%Y年%m月%d日({weekday_ja}) %H:%M")
+
 async def check_and_assign_level_roles(member: discord.Member, level_type: str, new_level: int):
     rewards = await database.get_level_role_rewards(level_type)
     roles_to_add = []
@@ -257,8 +265,8 @@ async def on_message(message):
                 if not duplicate:
                     period = await database.get_evaluation_period(user_id)
                     if period:
-                        start_str = f"<t:{int(period['start_time'].timestamp())}:F>"
-                        end_str = f"<t:{int(period['end_time'].timestamp())}:F>"
+                        start_str = format_evaluation_datetime(period['start_time'])
+                        end_str = format_evaluation_datetime(period['end_time'])
                         content = (
                             f"**対象者:** {message.author.mention}\n"
                             f"**評価期間:** {start_str} ～ {end_str}\n\n"
@@ -2947,8 +2955,9 @@ class EvaluationGroup(app_commands.Group):
         for p in periods:
             member = interaction.guild.get_member(p['user_id'])
             name = member.display_name if member else f"ID: {p['user_id']}"
+            end_str = format_evaluation_datetime(p['end_time'])
             end_t = int(p['end_time'].timestamp())
-            embed.add_field(name=name, value=f"終了予定: <t:{end_t}:F> (<t:{end_t}:R>)", inline=False)
+            embed.add_field(name=name, value=f"終了予定: {end_str} (<t:{end_t}:R>)", inline=False)
             
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -2964,12 +2973,13 @@ class EvaluationGroup(app_commands.Group):
         if not period:
             return await interaction.response.send_message(f"{target.display_name} は評価期間中ではありません。", ephemeral=True)
             
-        start_t = int(period['start_time'].timestamp())
+        start_str = format_evaluation_datetime(period['start_time'])
+        end_str = format_evaluation_datetime(period['end_time'])
         end_t = int(period['end_time'].timestamp())
         
         embed = discord.Embed(title=f"⏳ {target.display_name} の評価期間", color=discord.Color.green())
-        embed.add_field(name="開始時刻", value=f"<t:{start_t}:F>", inline=False)
-        embed.add_field(name="終了予定", value=f"<t:{end_t}:F> (<t:{end_t}:R>)", inline=False)
+        embed.add_field(name="開始時刻", value=start_str, inline=False)
+        embed.add_field(name="終了予定", value=f"{end_str} (<t:{end_t}:R>)", inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="延長", description="【運営・評価員専用】ユーザーの評価期間を延長します")
@@ -2986,8 +2996,8 @@ class EvaluationGroup(app_commands.Group):
             return await interaction.response.send_message(f"{user.display_name} は評価期間中ではありません。", ephemeral=True)
             
         period = await database.get_evaluation_period(user.id)
-        end_t = int(period['end_time'].timestamp())
-        await interaction.response.send_message(f"✅ {user.mention} の評価期間を {extra_days} 日延長しました。\n新しい終了予定: <t:{end_t}:F>", ephemeral=True)
+        end_str = format_evaluation_datetime(period['end_time'])
+        await interaction.response.send_message(f"✅ {user.mention} の評価期間を {extra_days} 日延長しました。\n新しい終了予定: {end_str}", ephemeral=True)
 
 # --- 実行 ---
 if __name__ == "__main__":
