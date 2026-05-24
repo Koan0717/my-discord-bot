@@ -1284,11 +1284,29 @@ class ConfirmAnonymousSetupButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        panel_ch = self.view.panel_channel
-        dest_ch = self.view.dest_channel
+        panel_ch_raw = self.view.panel_channel
+        dest_ch_raw = self.view.dest_channel
         
-        if not panel_ch or not dest_ch:
+        if not panel_ch_raw or not dest_ch_raw:
             return await interaction.followup.send("❌ 設置先と掲載先の両方を選択してください。", ephemeral=True)
+            
+        guild = interaction.guild
+        panel_ch = guild.get_channel(panel_ch_raw.id)
+        dest_ch = guild.get_channel(dest_ch_raw.id)
+        
+        if not panel_ch:
+            try:
+                panel_ch = await guild.fetch_channel(panel_ch_raw.id)
+            except:
+                pass
+        if not dest_ch:
+            try:
+                dest_ch = await guild.fetch_channel(dest_ch_raw.id)
+            except:
+                pass
+                
+        if not panel_ch or not dest_ch:
+            return await interaction.followup.send("❌ 選択されたチャンネルが見つかりませんでした。", ephemeral=True)
             
         try:
             await database.add_anonymous_chat(panel_ch.id, dest_ch.id)
