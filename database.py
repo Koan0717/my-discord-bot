@@ -96,6 +96,13 @@ async def setup_db():
             ON CONFLICT (room_type, duration) DO NOTHING
         ''')
 
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS anonymous_chats (
+                panel_channel_id BIGINT PRIMARY KEY,
+                dest_channel_id BIGINT
+            )
+        ''')
+
 
 async def get_user(user_id: int):
     p = await get_pool()
@@ -362,5 +369,27 @@ async def update_room_price(room_type: str, duration: int, price: int):
             ON CONFLICT (room_type, duration) 
             DO UPDATE SET price = EXCLUDED.price
         ''', room_type, duration, price)
+
+# --- 匿名チャット管理用関数 ---
+async def add_anonymous_chat(panel_channel_id: int, dest_channel_id: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO anonymous_chats (panel_channel_id, dest_channel_id)
+            VALUES ($1, $2)
+            ON CONFLICT (panel_channel_id)
+            DO UPDATE SET dest_channel_id = $2
+        ''', panel_channel_id, dest_channel_id)
+
+async def get_anonymous_chat(panel_channel_id: int) -> int:
+    p = await get_pool()
+    async with p.acquire() as conn:
+        row = await conn.fetchrow('SELECT dest_channel_id FROM anonymous_chats WHERE panel_channel_id = $1', panel_channel_id)
+        return row['dest_channel_id'] if row else None
+
+async def remove_anonymous_chat(channel_id: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('DELETE FROM anonymous_chats WHERE panel_channel_id = $1 OR dest_channel_id = $1', channel_id)
 
 

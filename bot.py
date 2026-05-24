@@ -127,6 +127,7 @@ class EconomyBot(commands.Bot):
         self.add_view(VCRenamePanelView())
         self.add_view(PanelSetupView())
         self.add_view(InquiryRequestPanelView())
+        self.add_view(AnonymousChatPanelView())
         
         # グループの登録
         self.tree.add_command(AdminGroup())
@@ -420,6 +421,9 @@ async def on_guild_channel_delete(channel):
     
     # お問い合わせパネルが削除された場合、データベースから削除する
     await database.remove_inquiry_panel(channel.id)
+
+    # 匿名チャット設定が削除された場合、データベースから削除する
+    await database.remove_anonymous_chat(channel.id)
 
 @bot.event
 async def on_member_update(before, after):
@@ -1178,6 +1182,178 @@ class InquirySetupView(discord.ui.View):
         self.add_item(InquirySetupRoleSelect())
 
 
+# --- 匿名チャットシステム ---
+
+class AnonymousMessageModal(discord.ui.Modal, title="匿名メッセージ送信"):
+    message_input = discord.ui.TextInput(
+        label="メッセージ内容",
+        style=discord.TextStyle.paragraph,
+        placeholder="ここにメッセージを入力してください...",
+        required=True,
+        max_length=2000
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
+        # 掲載先チャンネルをDBから取得
+        dest_channel_id = await database.get_anonymous_chat(interaction.channel.id)
+        if not dest_channel_id:
+            return await interaction.followup.send("❌ 掲載先チャンネルが設定されていません。", ephemeral=True)
+            
+        guild = interaction.guild
+        dest_channel = guild.get_channel(dest_channel_id)
+        if not dest_channel:
+            try:
+                dest_channel = await guild.fetch_channel(dest_channel_id)
+            except:
+                pass
+        
+        if not dest_channel:
+            return await interaction.followup.send("❌ 掲載先チャンネルが見つかりません。削除された可能性があります。", ephemeral=True)
+            
+        # プレミアム機能: 日替わり一時IDの生成
+        import hashlib
+        today_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        salt = os.getenv("ANONYMOUS_SALT", "anon_default_salt_998")
+        user_hash = hashlib.sha256(f"{interaction.user.id}-{today_str}-{salt}".encode()).hexdigest()
+        anon_id = user_hash[:8].upper()
+        
+        embed = discord.Embed(
+            description=self.message_input.value,
+            color=0x2f3136
+        )
+        embed.set_author(
+            name=f"匿名ユーザー (ID: {anon_id})",
+            icon_url="https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=150"
+        )
+        embed.timestamp = datetime.datetime.now(JST)
+        
+        try:
+            await dest_channel.send(embed=embed)
+            await interaction.followup.send("✅ 匿名メッセージを送信しました！", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ 送信に失敗しました: {e}", ephemeral=True)
+
+class AnonymousChatPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="匿名メッセージを送信", style=discord.ButtonStyle.primary, emoji="💬", custom_id="persistent_anon_chat_btn")
+    async def send_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(AnonymousMessageModal())
+
+class AnonymousPanelChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self):
+        super().__init__(
+            placeholder="① パネルを設置するテキストチャンネルを選択...",
+            channel_types=[discord.ChannelType.text],
+            min_values=1,
+            max_values=1,
+            row=0
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.panel_channel = self.values[0]
+        await self.view.update_state(interaction)
+
+class AnonymousDestChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self):
+        super().__init__(
+            placeholder="② 掲載するテキストチャンネルを選択...",
+            channel_types=[discord.ChannelType.text],
+            min_values=1,
+            max_values=1,
+            row=1
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.dest_channel = self.values[0]
+        await self.view.update_state(interaction)
+
+class ConfirmAnonymousSetupButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="設定を確定",
+            style=discord.ButtonStyle.success,
+            emoji="✅",
+            row=2,
+            disabled=True,
+            custom_id="admin_anon_setup_confirm_btn"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        panel_ch = self.view.panel_channel
+        dest_ch = self.view.dest_channel
+        
+        if not panel_ch or not dest_ch:
+            return await interaction.followup.send("❌ 設置先と掲載先の両方を選択してください。", ephemeral=True)
+            
+        try:
+            await database.add_anonymous_chat(panel_ch.id, dest_ch.id)
+            
+            embed = discord.Embed(
+                title="💬 匿名チャット窓口",
+                description=(
+                    "こちらのチャンネルは匿名チャットの送信窓口です。\n\n"
+                    "下の「匿名メッセージを送信」ボタンを押すと、入力フォーム（モーダル）が開きます。\n"
+                    "送信したメッセージは、設定された掲載チャンネルへ匿名で送信されます。\n"
+                    "※発言者を特定することはできませんが、なりすまし防止のため毎日ランダムに変わる「日替わり一時ID」が付与されます。"
+                ),
+                color=discord.Color.purple()
+            )
+            await panel_ch.send(embed=embed, view=AnonymousChatPanelView())
+            
+            await interaction.followup.send(
+                f"✅ 匿名チャットの設置が完了しました！\n"
+                f"設置先: {panel_ch.mention}\n"
+                f"掲載先: {dest_ch.mention}",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.followup.send(f"❌ 設置に失敗しました: {e}", ephemeral=True)
+
+class AnonymousChatSetupView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=180)
+        self.panel_channel = None
+        self.dest_channel = None
+        
+        self.panel_select = AnonymousPanelChannelSelect()
+        self.dest_select = AnonymousDestChannelSelect()
+        self.confirm_button = ConfirmAnonymousSetupButton()
+        
+        self.add_item(self.panel_select)
+        self.add_item(self.dest_select)
+        self.add_item(self.confirm_button)
+
+    async def update_state(self, interaction: discord.Interaction):
+        if self.panel_channel and self.dest_channel:
+            self.confirm_button.disabled = False
+        else:
+            self.confirm_button.disabled = True
+            
+        embed = discord.Embed(
+            title="💬 匿名チャット設定",
+            description=(
+                "匿名チャットの設置設定を行います。\n\n"
+                "**1. パネル（送信ボタン）を設置するテキストチャンネル** を選択してください。\n"
+                "**2. 匿名メッセージが掲載されるテキストチャンネル** を選択してください。"
+            ),
+            color=discord.Color.purple()
+        )
+        
+        panel_mention = self.panel_channel.mention if self.panel_channel else "❌ 未選択"
+        dest_mention = self.dest_channel.mention if self.dest_channel else "❌ 未選択"
+        
+        embed.add_field(name="① パネル設置先", value=panel_mention, inline=True)
+        embed.add_field(name="② メッセージ掲載先", value=dest_mention, inline=True)
+        
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
+
 class TicketControlView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -1914,7 +2090,8 @@ class PanelSelect(discord.ui.Select):
             discord.SelectOption(label="告解・相談室", description="告解・相談依頼のパネルを設置します", emoji="⛪", value="confession"),
             discord.SelectOption(label="VC管理", description="VC名・人数制限変更のパネルを設置します", emoji="⚙️", value="vc_manage"),
             discord.SelectOption(label="入界手続き", description="新規メンバーの入界手続きパネルを設置します", emoji="📝", value="interview"),
-            discord.SelectOption(label="お問い合わせ", description="お問い合わせ作成パネルを設置します", emoji="✉️", value="inquiry")
+            discord.SelectOption(label="お問い合わせ", description="お問い合わせ作成パネルを設置します", emoji="✉️", value="inquiry"),
+            discord.SelectOption(label="匿名チャット", description="匿名チャットのパネルを設置します", emoji="💬", value="anonymous_chat")
         ]
         super().__init__(placeholder="設置するパネルを選択してください...", min_values=1, max_values=1, options=options, custom_id="admin_panel_setup_select")
 
@@ -2057,6 +2234,18 @@ class PanelSelect(discord.ui.Select):
                 color=discord.Color.blue()
             )
             await interaction.response.send_message(embed=embed, view=InquirySetupView(), ephemeral=True)
+        elif val == "anonymous_chat":
+            embed = discord.Embed(
+                title="💬 匿名チャット設定",
+                description=(
+                    "匿名チャットの設置設定を行います。\n\n"
+                    "**1. パネル（送信ボタン）を設置するテキストチャンネル** を選択してください。\n"
+                    "**2. 匿名メッセージが掲載されるテキストチャンネル** を選択してください。"
+                ),
+                color=discord.Color.purple()
+            )
+            await interaction.response.send_message(embed=embed, view=AnonymousChatSetupView(), ephemeral=True)
+
 
 # --- VC作成トリガー管理パネル用UI ---
 
