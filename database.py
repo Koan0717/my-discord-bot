@@ -77,6 +77,25 @@ async def setup_db():
             )
         ''')
 
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS room_prices (
+                room_type VARCHAR(20),
+                duration INTEGER,
+                price INTEGER,
+                PRIMARY KEY (room_type, duration)
+            )
+        ''')
+
+        await conn.execute('''
+            INSERT INTO room_prices (room_type, duration, price) VALUES
+            ('宿', 12, 10000),
+            ('宿', 24, 15000),
+            ('高級宿', 12, 150000),
+            ('高級宿', 24, 250000),
+            ('カスタムVC', 24, 30000)
+            ON CONFLICT (room_type, duration) DO NOTHING
+        ''')
+
 
 async def get_user(user_id: int):
     p = await get_pool()
@@ -326,4 +345,22 @@ async def remove_level_role_reward(level_type: str, level: int, role_id: int):
             DELETE FROM level_role_rewards 
             WHERE level_type = $1 AND level = $2 AND role_id = $3
         ''', level_type, level, role_id)
+
+# --- 部屋価格管理用関数 ---
+async def get_all_room_prices() -> list[dict]:
+    p = await get_pool()
+    async with p.acquire() as conn:
+        rows = await conn.fetch('SELECT room_type, duration, price FROM room_prices ORDER BY room_type ASC, duration ASC')
+        return [{"room_type": r["room_type"], "duration": r["duration"], "price": r["price"]} for r in rows]
+
+async def update_room_price(room_type: str, duration: int, price: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO room_prices (room_type, duration, price) 
+            VALUES ($1, $2, $3)
+            ON CONFLICT (room_type, duration) 
+            DO UPDATE SET price = EXCLUDED.price
+        ''', room_type, duration, price)
+
 
