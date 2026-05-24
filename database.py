@@ -68,6 +68,16 @@ async def setup_db():
         except Exception as e:
             print(f"[Migration] inquiry_panels migration warning: {e}")
 
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS level_role_rewards (
+                level_type VARCHAR(10),
+                level INTEGER,
+                role_id BIGINT,
+                PRIMARY KEY (level_type, level, role_id)
+            )
+        ''')
+
+
 async def get_user(user_id: int):
     p = await get_pool()
     async with p.acquire() as conn:
@@ -280,3 +290,40 @@ async def remove_inquiry_panel(channel_id: int):
     p = await get_pool()
     async with p.acquire() as conn:
         await conn.execute('DELETE FROM inquiry_panels WHERE channel_id = $1', channel_id)
+
+# --- レベルロール報酬管理用関数 ---
+async def add_level_role_reward(level_type: str, level: int, role_id: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO level_role_rewards (level_type, level, role_id)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (level_type, level, role_id) DO NOTHING
+        ''', level_type, level, role_id)
+
+async def get_level_role_rewards(level_type: str = None) -> list[dict]:
+    p = await get_pool()
+    async with p.acquire() as conn:
+        if level_type:
+            rows = await conn.fetch('''
+                SELECT level_type, level, role_id 
+                FROM level_role_rewards 
+                WHERE level_type = $1 
+                ORDER BY level ASC
+            ''', level_type)
+        else:
+            rows = await conn.fetch('''
+                SELECT level_type, level, role_id 
+                FROM level_role_rewards 
+                ORDER BY level_type ASC, level ASC
+            ''')
+        return [{"level_type": r["level_type"], "level": r["level"], "role_id": r["role_id"]} for r in rows]
+
+async def remove_level_role_reward(level_type: str, level: int, role_id: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('''
+            DELETE FROM level_role_rewards 
+            WHERE level_type = $1 AND level = $2 AND role_id = $3
+        ''', level_type, level, role_id)
+

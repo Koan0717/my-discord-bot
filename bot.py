@@ -52,6 +52,24 @@ EVALUATION_FORUM_CHANNEL_ID = 1503360808669806713
 load_dotenv()
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
+async def check_and_assign_level_roles(member: discord.Member, level_type: str, new_level: int):
+    rewards = await database.get_level_role_rewards(level_type)
+    roles_to_add = []
+    for r in rewards:
+        if r["level"] <= new_level:
+            role = member.guild.get_role(r["role_id"])
+            if role and role not in member.roles:
+                roles_to_add.append(role)
+    if roles_to_add:
+        try:
+            await member.add_roles(*roles_to_add, reason=f"{level_type.upper()}レベル到達報酬 (Lv.{new_level})")
+            role_mentions = ", ".join([role.mention for role in roles_to_add])
+            lv_channel = member.guild.get_channel(LEVEL_UP_CHANNEL_ID)
+            if lv_channel:
+                await lv_channel.send(f"🎁 {member.mention} が {level_type.upper()} レベル {new_level} に達したため、以下のロールが付与されました！\n{role_mentions}")
+        except Exception as e:
+            print(f"[ERROR] check_and_assign_level_roles for {member.display_name}: {e}")
+
 class EconomyBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
@@ -171,6 +189,7 @@ class EconomyBot(commands.Bot):
                         lv_channel = self.get_channel(LEVEL_UP_CHANNEL_ID)
                         if lv_channel:
                             await lv_channel.send(f"🎊 {member.mention} が **VCレベルアップ！** (Lv.{new_lv-1} ➔ **{new_lv}**)")
+                        await check_and_assign_level_roles(member, "vc", new_lv)
             else:
                 # ユーザーがどのVCにもいない、またはオフライン
                 self.vc_sessions.pop(user_id, None)
@@ -202,6 +221,8 @@ async def on_message(message):
                 lv_channel = bot.get_channel(LEVEL_UP_CHANNEL_ID)
                 if lv_channel:
                     await lv_channel.send(f"🎊 {message.author.mention} が **TCレベルアップ！** (Lv.{new_lv-1} ➔ **{new_lv}**)")
+                if isinstance(message.author, discord.Member):
+                    await check_and_assign_level_roles(message.author, "tc", new_lv)
     
     # 3. 自己紹介チャンネルでの発言検知（スレッド自動作成）
     if message.channel.id in SELF_INTRO_CHANNEL_IDS:
@@ -351,6 +372,7 @@ async def on_voice_state_update(member, before, after):
                         lv_channel = bot.get_channel(LEVEL_UP_CHANNEL_ID)
                         if lv_channel:
                             await lv_channel.send(f"🎊 {member.mention} が **VCレベルアップ！** (Lv.{new_lv-1} ➔ **{new_lv}**)")
+                        await check_and_assign_level_roles(member, "vc", new_lv)
             
             # 退出した部屋が無人になった場合
             if len(before.channel.members) == 0:
@@ -2029,11 +2051,196 @@ class ManageVCTriggersButton(discord.ui.Button):
 
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
+class LevelTypeSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="💬 テキスト活動 (TC)", value="tc", description="TCレベルに基づく報酬"),
+            discord.SelectOption(label="🎙️ ボイス活動 (VC)", value="vc", description="VCレベルに基づく報酬")
+        ]
+        super().__init__(placeholder="レベルタイプ（TC/VC）を選択...", min_values=1, max_values=1, options=options, row=0)
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.selected_level_type = self.values[0]
+        await interaction.response.defer()
+
+class LevelRoleSelect(discord.ui.RoleSelect):
+    def __init__(self):
+        super().__init__(placeholder="付与するロールを選択...", min_values=1, max_values=1, row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.selected_role = self.values[0]
+        await interaction.response.defer()
+
+class LevelInputModal(discord.ui.Modal, title='レベルロール設定：レベル入力'):
+    level_input = discord.ui.TextInput(label='目標レベル', placeholder='例: 10', max_length=5, required=True)
+
+    def __init__(self, level_type: str, role: discord.Role, parent_view):
+        super().__init__()
+        self.level_type = level_type
+        self.role = role
+        self.parent_view = parent_view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            level = int(self.level_input.value)
+            if level <= 0:
+                return await interaction.response.send_message("❌ 1以上のレベルを指定してください。", ephemeral=True)
+            
+            # 登録処理
+            await database.add_level_role_reward(self.level_type, level, self.role.id)
+            
+            # ビューのリセット
+            self.parent_view.selected_role = None
+            self.parent_view.selected_level_type = None
+            
+            # パネル表示を更新
+            await update_level_roles_config_view(interaction)
+        except ValueError:
+            await interaction.response.send_message("❌ レベルは半角数字で入力してください。", ephemeral=True)
+        except Exception as e:
+            print(f"[ERROR] LevelInputModal: {e}")
+            await interaction.response.send_message(f"❌ エラーが発生しました: {e}", ephemeral=True)
+
+class AddLevelRoleButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="レベルを指定して追加", style=discord.ButtonStyle.success, emoji="➕", row=2)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not getattr(self.view, "selected_level_type", None):
+            return await interaction.response.send_message("❌ 先にレベルタイプ（TC/VC）を選択してください。", ephemeral=True)
+        if not getattr(self.view, "selected_role", None):
+            return await interaction.response.send_message("❌ 先に付与するロールを選択してください。", ephemeral=True)
+
+        modal = LevelInputModal(self.view.selected_level_type, self.view.selected_role, self.view)
+        await interaction.response.send_modal(modal)
+
+class RemoveLevelRoleSelect(discord.ui.Select):
+    def __init__(self, rewards, guild: discord.Guild):
+        options = []
+        for r in rewards:
+            ltype = "TC" if r["level_type"] == "tc" else "VC"
+            role = guild.get_role(r["role_id"])
+            role_name = role.name if role else f"不明なロール (ID: {r['role_id']})"
+            options.append(discord.SelectOption(
+                label=f"[{ltype}] Lv.{r['level']} ➔ {role_name}",
+                value=f"{r['level_type']}:{r['level']}:{r['role_id']}",
+                description=f"ロールID: {r['role_id']}"
+            ))
+        super().__init__(
+            placeholder="削除するレベルロール報酬を選択...",
+            min_values=1,
+            max_values=1,
+            options=options[:25],
+            row=3
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        val = self.values[0]
+        level_type, level_str, role_id_str = val.split(":")
+        level = int(level_str)
+        role_id = int(role_id_str)
+        
+        await database.remove_level_role_reward(level_type, level, role_id)
+        
+        await update_level_roles_config_view(interaction)
+
+class LevelRolesConfigView(discord.ui.View):
+    def __init__(self, rewards, guild: discord.Guild):
+        super().__init__(timeout=180)
+        self.selected_level_type = None
+        self.selected_role = None
+        
+        self.add_item(LevelTypeSelect())
+        self.add_item(LevelRoleSelect())
+        self.add_item(AddLevelRoleButton())
+        if rewards:
+            self.add_item(RemoveLevelRoleSelect(rewards, guild))
+
+async def update_level_roles_config_view(interaction: discord.Interaction):
+    rewards = await database.get_level_role_rewards()
+    view = LevelRolesConfigView(rewards, interaction.guild)
+    
+    embed = discord.Embed(
+        title="🎁 レベルロール設定パネル",
+        description=(
+            "レベルに応じて付与されるロールを設定します。\n\n"
+            "**【設定手順】**\n"
+            "1. **レベルタイプ**（TC/VC）を選択します。\n"
+            "2. **付与するロール**を選択します。\n"
+            "3. **「レベルを指定して追加」**ボタンを押し、目標レベルを入力します。\n\n"
+            "**【削除手順】**\n"
+            "一番下の削除用ドロップダウンから、削除したい報酬設定を選択します。"
+        ),
+        color=discord.Color.blue()
+    )
+    
+    rewards_str = ""
+    for r in rewards:
+        ltype = "💬 TC" if r["level_type"] == "tc" else "🎙️ VC"
+        role = interaction.guild.get_role(r["role_id"])
+        role_mention = role.mention if role else f"⚠️ 不明なロール (ID: `{r['role_id']}`)"
+        rewards_str += f"• **{ltype}** Lv.{r['level']} ➔ {role_mention}\n"
+        
+    if not rewards_str:
+        rewards_str = "登録されているレベルロール報酬はありません。"
+        
+    embed.add_field(name="現在の設定一覧", value=rewards_str, inline=False)
+    
+    if interaction.is_expired() or interaction.response.is_done():
+        await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=view)
+    else:
+        await interaction.response.edit_message(embed=embed, view=view)
+
+class ManageLevelRolesButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="レベルロールを設定",
+            style=discord.ButtonStyle.secondary,
+            emoji="🎁",
+            custom_id="persistent_admin_manage_level_roles_btn"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not has_admin_role(interaction.user) and not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("この操作を実行する権限がありません（運営専用）。", ephemeral=True)
+
+        rewards = await database.get_level_role_rewards()
+        view = LevelRolesConfigView(rewards, interaction.guild)
+        
+        embed = discord.Embed(
+            title="🎁 レベルロール設定パネル",
+            description=(
+                "レベルに応じて付与されるロールを設定します。\n\n"
+                "**【設定手順】**\n"
+                "1. **レベルタイプ**（TC/VC）を選択します。\n"
+                "2. **付与するロール**を選択します。\n"
+                "3. **「レベルを指定して追加」**ボタンを押し、目標レベルを入力します。\n\n"
+                "**【削除手順】**\n"
+                "一番下の削除用ドロップダウンから、削除したい報酬設定を選択します。"
+            ),
+            color=discord.Color.blue()
+        )
+        
+        rewards_str = ""
+        for r in rewards:
+            ltype = "💬 TC" if r["level_type"] == "tc" else "🎙️ VC"
+            role = interaction.guild.get_role(r["role_id"])
+            role_mention = role.mention if role else f"⚠️ 不明なロール (ID: `{r['role_id']}`)"
+            rewards_str += f"• **{ltype}** Lv.{r['level']} ➔ {role_mention}\n"
+            
+        if not rewards_str:
+            rewards_str = "登録されているレベルロール報酬はありません。"
+            
+        embed.add_field(name="現在の設定一覧", value=rewards_str, inline=False)
+
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
 class PanelSetupView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
         self.add_item(PanelSelect())
         self.add_item(ManageVCTriggersButton())
+        self.add_item(ManageLevelRolesButton())
 
 class AdminGroup(app_commands.Group):
     def __init__(self): super().__init__(name="管理者", description="【管理者専用】管理コマンド")
@@ -2107,6 +2314,23 @@ class AdminGroup(app_commands.Group):
         embed.add_field(
             name="🎙️ VC作成トリガー設定",
             value=triggers_str,
+            inline=False
+        )
+        
+        # レベルロール報酬設定
+        rewards = await database.get_level_role_rewards()
+        rewards_str = ""
+        for r in rewards:
+            ltype = "💬 TC" if r["level_type"] == "tc" else "🎙️ VC"
+            role = interaction.guild.get_role(r["role_id"])
+            role_name = role.mention if role else f"不明なロール (ID: {r['role_id']})"
+            rewards_str += f"• **{ltype}** Lv.{r['level']} ➔ {role_name}\n"
+        if not rewards_str:
+            rewards_str = "登録されているレベルロール報酬はありません。"
+            
+        embed.add_field(
+            name="🎁 レベルロール設定",
+            value=rewards_str,
             inline=False
         )
         
