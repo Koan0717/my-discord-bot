@@ -967,8 +967,8 @@ class ConfessionRequestModal(discord.ui.Modal, title='告解・相談依頼'):
             self.target_member: discord.PermissionOverwrite(read_messages=True, send_messages=True)
         }
         
-        # 管理・告解司祭・司祭系ロールにも権限を付与
-        for role_name in ADMIN_ROLE_NAMES + [CONFESSION_PRIEST_ROLE_NAME, PRIEST_ROLE_NAME]:
+        # 管理・告解司祭系ロールにも権限を付与
+        for role_name in ADMIN_ROLE_NAMES + [CONFESSION_PRIEST_ROLE_NAME]:
             role = discord.utils.get(guild.roles, name=role_name)
             if role:
                 overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
@@ -996,14 +996,19 @@ class ConfessionRequestModal(discord.ui.Modal, title='告解・相談依頼'):
                 color=discord.Color.purple()
             )
             
-            # 管理・告解司祭・司祭をメンション（通知用）
+            # 告解司祭のみメンション（通知用）
             mentions = []
-            for role_name in ADMIN_ROLE_NAMES + [CONFESSION_PRIEST_ROLE_NAME, PRIEST_ROLE_NAME]:
-                role = discord.utils.get(guild.roles, name=role_name)
-                if role: mentions.append(role.mention)
+            role = discord.utils.get(guild.roles, name=CONFESSION_PRIEST_ROLE_NAME)
+            if role:
+                mentions.append(role.mention)
             
             mention_str = " ".join(mentions)
-            await ticket_channel.send(content=f"{interaction.user.mention} {self.target_member.mention} {mention_str}", embed=embed, view=TicketControlView())
+            
+            content_parts = [interaction.user.mention, self.target_member.mention]
+            if mention_str:
+                content_parts.append(mention_str)
+            
+            await ticket_channel.send(content=" ".join(content_parts), embed=embed, view=TicketControlView())
             
             await interaction.followup.send(f"✅ チケットを作成しました: {ticket_channel.mention}", ephemeral=True)
         except Exception as e:
