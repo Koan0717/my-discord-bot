@@ -136,6 +136,7 @@ class EconomyBot(commands.Bot):
         self.add_view(PanelSetupView())
         self.add_view(InquiryRequestPanelView())
         self.add_view(AnonymousChatPanelView())
+        self.add_view(CustomTicketPanelView())
         
         # グループの登録
         self.tree.add_command(AdminGroup())
@@ -432,6 +433,9 @@ async def on_guild_channel_delete(channel):
 
     # 匿名チャット設定が削除された場合、データベースから削除する
     await database.remove_anonymous_chat(channel.id)
+
+    # カスタムチケットパネルが削除された場合、データベースから削除する
+    await database.remove_custom_ticket_panel(channel.id)
 
 @bot.event
 async def on_member_update(before, after):
@@ -826,8 +830,8 @@ class EmblemRequestModal(discord.ui.Modal, title='スタンプ制作依頼'):
             self.target_member: discord.PermissionOverwrite(read_messages=True, send_messages=True)
         }
         
-        # 管理・紋章師系ロールにも権限を付与
-        for role_name in ADMIN_ROLE_NAMES + [EMBLEM_MANAGER_ROLE_NAME, EMBLEM_MASTER_ROLE_NAME]:
+        # 管理・統括系ロールにも権限を付与
+        for role_name in ADMIN_ROLE_NAMES + [EMBLEM_MANAGER_ROLE_NAME]:
             role = discord.utils.get(guild.roles, name=role_name)
             if role:
                 overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
@@ -855,14 +859,19 @@ class EmblemRequestModal(discord.ui.Modal, title='スタンプ制作依頼'):
                 color=discord.Color.blue()
             )
             
-            # 管理・統括・紋章師をメンション（通知用）
+            # 統括のみメンション（通知用）
             mentions = []
-            for role_name in ADMIN_ROLE_NAMES + [EMBLEM_MANAGER_ROLE_NAME, EMBLEM_MASTER_ROLE_NAME]:
-                role = discord.utils.get(guild.roles, name=role_name)
-                if role: mentions.append(role.mention)
+            role = discord.utils.get(guild.roles, name=EMBLEM_MANAGER_ROLE_NAME)
+            if role:
+                mentions.append(role.mention)
             
             mention_str = " ".join(mentions)
-            await ticket_channel.send(content=f"{interaction.user.mention} {self.target_member.mention} {mention_str}", embed=embed, view=TicketControlView())
+            
+            content_parts = [interaction.user.mention, self.target_member.mention]
+            if mention_str:
+                content_parts.append(mention_str)
+            
+            await ticket_channel.send(content=" ".join(content_parts), embed=embed, view=TicketControlView())
             
             await interaction.followup.send(f"✅ チケットを作成しました: {ticket_channel.mention}", ephemeral=True)
         except Exception as e:
@@ -1188,6 +1197,325 @@ class InquirySetupView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=180)
         self.add_item(InquirySetupRoleSelect())
+
+
+# --- カスタムチケット設定・パネルUI ---
+
+class CustomTicketSetupModal(discord.ui.Modal, title="カスタムチケットパネル設定"):
+    panel_title = discord.ui.TextInput(
+        label="パネルのタイトル",
+        placeholder="例: スタンプ制作 依頼所",
+        max_length=100,
+        required=True
+    )
+    panel_description = discord.ui.TextInput(
+        label="説明文 (パネルに書く文章)",
+        style=discord.TextStyle.paragraph,
+        placeholder="例: ここからスタンプの制作を依頼できます。\n下のボタンを押して担当者を選択してください。",
+        max_length=1000,
+        required=True
+    )
+    button_label = discord.ui.TextInput(
+        label="ボタンのテキスト",
+        placeholder="例: スタンプを依頼する",
+        max_length=20,
+        default="チケットを作成する",
+        required=True
+    )
+    button_emoji = discord.ui.TextInput(
+        label="ボタンの絵文字 (任意 - 絵文字1つ)",
+        placeholder="例: 🎨 / ✉️ / ⛪",
+        max_length=10,
+        required=False
+    )
+    ticket_prefix = discord.ui.TextInput(
+        label="チケット接頭辞 (チャンネル名の頭につく英数字)",
+        placeholder="例: ticket (ticket-001のようになります)",
+        max_length=15,
+        default="ticket",
+        required=True
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        view = CustomTicketMentionRoleSelectView(
+            title=self.panel_title.value,
+            description=self.panel_description.value,
+            button_label=self.button_label.value,
+            button_emoji=self.button_emoji.value or None,
+            prefix=self.ticket_prefix.value
+        )
+        
+        embed = discord.Embed(
+            title="🎫 カスタムチケット設定 (1/2)",
+            description="チケット作成時に**通知（メンション）するロール**を選択してください。",
+            color=discord.Color.blue()
+        )
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
+class CustomTicketMentionRoleSelectView(discord.ui.View):
+    def __init__(self, title, description, button_label, button_emoji, prefix):
+        super().__init__(timeout=180)
+        self.panel_title = title
+        self.panel_description = description
+        self.button_label = button_label
+        self.button_emoji = button_emoji
+        self.ticket_prefix = prefix
+        
+        self.add_item(CustomTicketMentionRoleSelect())
+
+
+class CustomTicketMentionRoleSelect(discord.ui.RoleSelect):
+    def __init__(self):
+        super().__init__(
+            placeholder="通知先（メンション）ロールを選択...",
+            min_values=1,
+            max_values=10
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        roles = self.values
+        mention_role_ids = [r.id for r in roles]
+        
+        view = CustomTicketTargetRoleSelectView(
+            title=self.view.panel_title,
+            description=self.view.panel_description,
+            button_label=self.view.button_label,
+            button_emoji=self.view.button_emoji,
+            prefix=self.view.ticket_prefix,
+            mention_role_ids=mention_role_ids
+        )
+        
+        embed = discord.Embed(
+            title="🎫 カスタムチケット設定 (2/2)",
+            description=(
+                "**依頼先となる人のロール**を選択してください。\n"
+                "ここにロールを設定すると、チケット作成時にそのロールを持つメンバーのリストが選択肢として表示されます。\n"
+                "設定しない（誰宛てでもない直接のお問い合わせ）場合は、「設定しない（直接作成）」を押してください。"
+            ),
+            color=discord.Color.blue()
+        )
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class CustomTicketTargetRoleSelectView(discord.ui.View):
+    def __init__(self, title, description, button_label, button_emoji, prefix, mention_role_ids):
+        super().__init__(timeout=180)
+        self.panel_title = title
+        self.panel_description = description
+        self.button_label = button_label
+        self.button_emoji = button_emoji
+        self.ticket_prefix = prefix
+        self.mention_role_ids = mention_role_ids
+        
+        self.add_item(CustomTicketTargetRoleSelect())
+
+    @discord.ui.button(label="設定しない（直接作成）", style=discord.ButtonStyle.secondary, row=2)
+    async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.save_and_send_panel(interaction, target_role_ids=[])
+
+    async def save_and_send_panel(self, interaction: discord.Interaction, target_role_ids: list[int]):
+        await interaction.response.defer(ephemeral=True)
+        channel = interaction.channel
+        
+        # DBに保存
+        await database.add_custom_ticket_panel(
+            channel_id=channel.id,
+            panel_title=self.panel_title,
+            panel_description=self.panel_description,
+            button_label=self.button_label,
+            button_emoji=self.button_emoji,
+            mention_role_ids=self.mention_role_ids,
+            target_role_ids=target_role_ids,
+            ticket_prefix=self.ticket_prefix
+        )
+        
+        # パネル送信
+        embed = discord.Embed(
+            title=self.panel_title,
+            description=self.panel_description,
+            color=discord.Color.blue()
+        )
+        
+        view = CustomTicketPanelView()
+        button = view.children[0]
+        button.label = self.button_label
+        if self.button_emoji:
+            button.emoji = self.button_emoji
+            
+        await channel.send(embed=embed, view=view)
+        await interaction.followup.send("✅ カスタムチケットパネルを設置しました！", ephemeral=True)
+
+
+class CustomTicketTargetRoleSelect(discord.ui.RoleSelect):
+    def __init__(self):
+        super().__init__(
+            placeholder="依頼先（担当）ロールを選択...",
+            min_values=1,
+            max_values=10,
+            row=1
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        roles = self.values
+        target_role_ids = [r.id for r in roles]
+        await self.view.save_and_send_panel(interaction, target_role_ids)
+
+
+class CustomTicketPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(style=discord.ButtonStyle.primary, custom_id="persistent_custom_ticket_req_btn")
+    async def request_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        panel = await database.get_custom_ticket_panel(interaction.channel.id)
+        if not panel:
+            return await interaction.response.send_message("❌ パネルの設定が見つかりません。設定が削除された可能性があります。", ephemeral=True)
+            
+        guild = interaction.guild
+        target_role_ids = panel.get("target_role_ids", [])
+        
+        if target_role_ids:
+            member_set = set()
+            for rid in target_role_ids:
+                role = guild.get_role(rid)
+                if role:
+                    member_set.update(role.members)
+            
+            options = []
+            for member in sorted(member_set, key=lambda m: m.display_name):
+                options.append(discord.SelectOption(
+                    label=member.display_name,
+                    value=str(member.id),
+                    description=f"{member.name}"
+                ))
+                
+            if not options:
+                return await interaction.response.send_message("❌ 現在、対応可能な担当者がいません（指定されたロールを持つメンバーがいません）。", ephemeral=True)
+            
+            view = CustomTicketSelectView(options, panel)
+            await interaction.response.send_message("担当者を選択してください：", view=view, ephemeral=True)
+        else:
+            modal = CustomTicketRequestModal(target_member=None, panel=panel)
+            await interaction.response.send_modal(modal)
+
+
+class CustomTicketSelectView(discord.ui.View):
+    def __init__(self, options, panel):
+        super().__init__(timeout=60)
+        self.panel = panel
+        
+        select = discord.ui.Select(
+            placeholder="担当者を選択してください...",
+            options=options[:25]
+        )
+        select.callback = self.select_callback
+        self.add_item(select)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        user_id = int(interaction.data['values'][0])
+        target_member = interaction.guild.get_member(user_id)
+        if not target_member:
+            return await interaction.response.send_message("メンバーが見つかりませんでした。", ephemeral=True)
+            
+        modal = CustomTicketRequestModal(target_member=target_member, panel=self.panel)
+        await interaction.response.send_modal(modal)
+
+
+class CustomTicketRequestModal(discord.ui.Modal):
+    details = discord.ui.TextInput(
+        label="ご用件・相談内容の詳細",
+        style=discord.TextStyle.paragraph,
+        placeholder="内容を詳しく入力してください。",
+        required=True,
+        max_length=1000
+    )
+
+    def __init__(self, target_member, panel):
+        title = panel["panel_title"]
+        if len(title) > 45:
+            title = title[:42] + "..."
+        super().__init__(title=title)
+        self.target_member = target_member
+        self.panel = panel
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        
+        prefix = self.panel.get("ticket_prefix") or "ticket"
+        
+        current_ticket_nums = []
+        for c in guild.channels:
+            if c.name.startswith(f"{prefix}-"):
+                try:
+                    num = int(c.name.split("-")[1])
+                    current_ticket_nums.append(num)
+                except:
+                    pass
+        
+        ticket_num = 1
+        while ticket_num in current_ticket_nums:
+            ticket_num += 1
+            
+        channel_name = f"{prefix}-{ticket_num:03d}"
+        
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        }
+        
+        if self.target_member:
+            overwrites[self.target_member] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            
+        for role_name in ADMIN_ROLE_NAMES:
+            role = discord.utils.get(guild.roles, name=role_name)
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+                
+        for rid in self.panel.get("mention_role_ids", []):
+            role = guild.get_role(rid)
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+                
+        try:
+            category = interaction.channel.category
+            ticket_channel = await guild.create_text_channel(
+                name=channel_name,
+                category=category,
+                overwrites=overwrites,
+                reason=f"Custom ticket ({prefix}) for {interaction.user.display_name}"
+            )
+            
+            title_text = f"🎫 {self.panel['panel_title']} チケット"
+            desc_text = f"**作成者:** {interaction.user.mention}\n"
+            if self.target_member:
+                desc_text += f"**担当者:** {self.target_member.mention}\n"
+            desc_text += f"\n**【内容】**\n{self.details.value}\n\n"
+            desc_text += "内容の確認や相談はこちらのチャンネルで行ってください。\n"
+            desc_text += "完了したら下のボタンでチケットを閉じることができます。"
+            
+            embed = discord.Embed(
+                title=title_text,
+                description=desc_text,
+                color=discord.Color.blue()
+            )
+            
+            mentions = [interaction.user.mention]
+            if self.target_member:
+                mentions.append(self.target_member.mention)
+                
+            for rid in self.panel.get("mention_role_ids", []):
+                role = guild.get_role(rid)
+                if role:
+                    mentions.append(role.mention)
+                    
+            mention_str = " ".join(mentions)
+            
+            await ticket_channel.send(content=mention_str, embed=embed, view=TicketControlView())
+            await interaction.followup.send(f"✅ チケットを作成しました: {ticket_channel.mention}", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ エラーが発生しました: {e}", ephemeral=True)
 
 
 # --- 匿名チャットシステム ---
@@ -2117,6 +2445,7 @@ class PanelSelect(discord.ui.Select):
             discord.SelectOption(label="VC管理", description="VC名・人数制限変更のパネルを設置します", emoji="⚙️", value="vc_manage"),
             discord.SelectOption(label="入界手続き", description="新規メンバーの入界手続きパネルを設置します", emoji="📝", value="interview"),
             discord.SelectOption(label="お問い合わせ", description="お問い合わせ作成パネルを設置します", emoji="✉️", value="inquiry"),
+            discord.SelectOption(label="カスタムチケット", description="カスタムチケット作成パネルを設置します", emoji="🎫", value="custom_ticket"),
             discord.SelectOption(label="匿名チャット", description="匿名チャットのパネルを設置します", emoji="💬", value="anonymous_chat")
         ]
         super().__init__(placeholder="設置するパネルを選択してください...", min_values=1, max_values=1, options=options, custom_id="admin_panel_setup_select")
@@ -2260,6 +2589,9 @@ class PanelSelect(discord.ui.Select):
                 color=discord.Color.blue()
             )
             await interaction.response.send_message(embed=embed, view=InquirySetupView(), ephemeral=True)
+        elif val == "custom_ticket":
+            modal = CustomTicketSetupModal()
+            await interaction.response.send_modal(modal)
         elif val == "anonymous_chat":
             embed = discord.Embed(
                 title="💬 匿名チャット設定",

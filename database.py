@@ -103,6 +103,19 @@ async def setup_db():
             )
         ''')
 
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS custom_ticket_panels (
+                channel_id BIGINT PRIMARY KEY,
+                panel_title TEXT NOT NULL,
+                panel_description TEXT NOT NULL,
+                button_label TEXT NOT NULL,
+                button_emoji TEXT,
+                mention_role_ids BIGINT[] NOT NULL,
+                target_role_ids BIGINT[] NOT NULL,
+                ticket_prefix TEXT NOT NULL
+            )
+        ''')
+
 
 async def get_user(user_id: int):
     p = await get_pool()
@@ -391,5 +404,60 @@ async def remove_anonymous_chat(channel_id: int):
     p = await get_pool()
     async with p.acquire() as conn:
         await conn.execute('DELETE FROM anonymous_chats WHERE panel_channel_id = $1 OR dest_channel_id = $1', channel_id)
+
+
+# --- カスタムチケットパネル管理用関数 ---
+async def add_custom_ticket_panel(
+    channel_id: int,
+    panel_title: str,
+    panel_description: str,
+    button_label: str,
+    button_emoji: str,
+    mention_role_ids: list[int],
+    target_role_ids: list[int],
+    ticket_prefix: str
+):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO custom_ticket_panels (
+                channel_id, panel_title, panel_description, button_label, button_emoji, mention_role_ids, target_role_ids, ticket_prefix
+            ) 
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8) 
+            ON CONFLICT (channel_id) 
+            DO UPDATE SET 
+                panel_title = $2,
+                panel_description = $3,
+                button_label = $4,
+                button_emoji = $5,
+                mention_role_ids = $6,
+                target_role_ids = $7,
+                ticket_prefix = $8
+        ''', channel_id, panel_title, panel_description, button_label, button_emoji, mention_role_ids, target_role_ids, ticket_prefix)
+
+async def get_custom_ticket_panel(channel_id: int) -> dict:
+    p = await get_pool()
+    async with p.acquire() as conn:
+        row = await conn.fetchrow('''
+            SELECT panel_title, panel_description, button_label, button_emoji, mention_role_ids, target_role_ids, ticket_prefix 
+            FROM custom_ticket_panels 
+            WHERE channel_id = $1
+        ''', channel_id)
+        if row:
+            return {
+                "panel_title": row["panel_title"],
+                "panel_description": row["panel_description"],
+                "button_label": row["button_label"],
+                "button_emoji": row["button_emoji"],
+                "mention_role_ids": row["mention_role_ids"] or [],
+                "target_role_ids": row["target_role_ids"] or [],
+                "ticket_prefix": row["ticket_prefix"] or "ticket"
+            }
+        return None
+
+async def remove_custom_ticket_panel(channel_id: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('DELETE FROM custom_ticket_panels WHERE channel_id = $1', channel_id)
 
 
