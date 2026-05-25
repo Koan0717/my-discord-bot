@@ -226,7 +226,125 @@ class EconomyBot(commands.Bot):
 
 bot = EconomyBot()
 
+# --- ログ用ヘルパー ---
+async def send_log(guild: discord.Guild, log_type: str, embed: discord.Embed):
+    if not guild:
+        return
+    channel_id = await database.get_log_channel(guild.id, log_type)
+    if channel_id:
+        channel = guild.get_channel(channel_id)
+        if not channel:
+            try:
+                channel = await guild.fetch_channel(channel_id)
+            except:
+                pass
+        if channel:
+            try:
+                await channel.send(embed=embed)
+            except Exception as e:
+                print(f"[ERROR] Failed to send log to channel {channel_id}: {e}")
+
 # --- イベント ---
+@bot.event
+async def on_message_edit(before: discord.Message, after: discord.Message):
+    if before.author.bot:
+        return
+    if before.content == after.content:
+        return
+    
+    guild = before.guild
+    if not guild:
+        return
+    
+    embed = discord.Embed(
+        title="📝 メッセージ編集",
+        color=discord.Color.orange(),
+        timestamp=datetime.datetime.now(JST)
+    )
+    embed.set_author(name=f"{before.author} (ID: {before.author.id})", icon_url=before.author.display_avatar.url)
+    embed.add_field(name="チャンネル", value=before.channel.mention, inline=True)
+    embed.add_field(name="メッセージID", value=before.id, inline=True)
+    
+    before_content = before.content or "*メッセージ内容なし*"
+    after_content = after.content or "*メッセージ内容なし*"
+    
+    if len(before_content) > 1024:
+        before_content = before_content[:1020] + "..."
+    if len(after_content) > 1024:
+        after_content = after_content[:1020] + "..."
+        
+    embed.add_field(name="変更前", value=before_content, inline=False)
+    embed.add_field(name="変更後", value=after_content, inline=False)
+    embed.set_footer(text=f"編集者: {before.author.display_name}")
+    
+    await send_log(guild, "message_edit", embed)
+
+@bot.event
+async def on_message_delete(message: discord.Message):
+    if message.author.bot:
+        return
+        
+    guild = message.guild
+    if not guild:
+        return
+        
+    embed = discord.Embed(
+        title="🗑️ メッセージ削除",
+        color=discord.Color.red(),
+        timestamp=datetime.datetime.now(JST)
+    )
+    embed.set_author(name=f"{message.author} (ID: {message.author.id})", icon_url=message.author.display_avatar.url)
+    embed.add_field(name="チャンネル", value=message.channel.mention, inline=True)
+    embed.add_field(name="メッセージID", value=message.id, inline=True)
+    
+    content = message.content or "*メッセージ内容なし*"
+    if len(content) > 1024:
+        content = content[:1020] + "..."
+    embed.add_field(name="内容", value=content, inline=False)
+    
+    if message.attachments:
+        attachment_urls = "\n".join([att.url for att in message.attachments])
+        if len(attachment_urls) > 1024:
+            attachment_urls = attachment_urls[:1020] + "..."
+        embed.add_field(name="添付ファイル", value=attachment_urls, inline=False)
+        
+    embed.set_footer(text=f"作成者: {message.author.display_name}")
+    
+    await send_log(guild, "message_delete", embed)
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    guild = member.guild
+    embed = discord.Embed(
+        title="📥 メンバー参加",
+        description=f"{member.mention} がサーバーに参加しました。",
+        color=discord.Color.green(),
+        timestamp=datetime.datetime.now(JST)
+    )
+    embed.set_author(name=f"{member} (ID: {member.id})", icon_url=member.display_avatar.url)
+    
+    created_at = member.created_at.astimezone(JST)
+    embed.add_field(name="アカウント作成日", value=created_at.strftime("%Y/%m/%d %H:%M:%S"), inline=False)
+    
+    await send_log(guild, "member_join_leave", embed)
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    guild = member.guild
+    embed = discord.Embed(
+        title="📤 メンバー退出",
+        description=f"{member.mention} がサーバーから退出しました。",
+        color=discord.Color.red(),
+        timestamp=datetime.datetime.now(JST)
+    )
+    embed.set_author(name=f"{member} (ID: {member.id})", icon_url=member.display_avatar.url)
+    
+    if member.joined_at:
+        joined_at = member.joined_at.astimezone(JST)
+        embed.add_field(name="サーバー参加日", value=joined_at.strftime("%Y/%m/%d %H:%M:%S"), inline=False)
+        
+    await send_log(guild, "member_join_leave", embed)
+
 @bot.event
 async def on_message(message):
     if message.author.bot:
@@ -295,6 +413,43 @@ async def on_message(message):
 
 @bot.event
 async def on_voice_state_update(member, before, after):
+    try:
+        if member.bot: return
+        
+        # VCログの送信
+        guild = member.guild
+        if guild:
+            embed = None
+            if before.channel is None and after.channel is not None:
+                embed = discord.Embed(
+                    title="🎙️ VC参加",
+                    description=f"{member.mention} が {after.channel.mention} に参加しました。",
+                    color=discord.Color.green(),
+                    timestamp=datetime.datetime.now(JST)
+                )
+                embed.set_author(name=f"{member} (ID: {member.id})", icon_url=member.display_avatar.url)
+            elif before.channel is not None and after.channel is None:
+                embed = discord.Embed(
+                    title="🎙️ VC退出",
+                    description=f"{member.mention} が {before.channel.mention} から退出しました。",
+                    color=discord.Color.red(),
+                    timestamp=datetime.datetime.now(JST)
+                )
+                embed.set_author(name=f"{member} (ID: {member.id})", icon_url=member.display_avatar.url)
+            elif before.channel is not None and after.channel is not None and before.channel.id != after.channel.id:
+                embed = discord.Embed(
+                    title="🎙️ VC移動",
+                    description=f"{member.mention} が {before.channel.mention} から {after.channel.mention} に移動しました。",
+                    color=discord.Color.blue(),
+                    timestamp=datetime.datetime.now(JST)
+                )
+                embed.set_author(name=f"{member} (ID: {member.id})", icon_url=member.display_avatar.url)
+                
+            if embed:
+                await send_log(guild, "vc_join_leave", embed)
+    except Exception as log_e:
+        print(f"[ERROR] Failed to send VC log: {log_e}")
+
     try:
         if member.bot: return
         user_id = member.id
@@ -3033,6 +3188,191 @@ class ManageRoomPricesButton(discord.ui.Button):
 
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
+class LogTypeSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="📝 メッセージ編集", value="message_edit", description="メッセージ編集ログ"),
+            discord.SelectOption(label="🗑️ メッセージ削除", value="message_delete", description="メッセージ削除ログ"),
+            discord.SelectOption(label="🎙️ VC参加・退出", value="vc_join_leave", description="VC参加・移動・退出ログ"),
+            discord.SelectOption(label="👥 メンバー入退", value="member_join_leave", description="サーバー参加・退出ログ")
+        ]
+        super().__init__(placeholder="設定するログの種類を選択...", min_values=1, max_values=1, options=options, row=0)
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.selected_log_type = self.values[0]
+        await interaction.response.defer()
+
+class LogChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self):
+        super().__init__(
+            placeholder="送信先テキストチャンネルを選択...",
+            channel_types=[discord.ChannelType.text],
+            min_values=1,
+            max_values=1,
+            row=1
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.selected_channel = self.values[0]
+        await interaction.response.defer()
+
+class SaveLogSettingButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="ログ設定を保存", style=discord.ButtonStyle.success, emoji="💾", row=2)
+
+    async def callback(self, interaction: discord.Interaction):
+        log_type = getattr(self.view, "selected_log_type", None)
+        channel = getattr(self.view, "selected_channel", None)
+        
+        if not log_type:
+            return await interaction.response.send_message("❌ 先にログの種類を選択してください。", ephemeral=True)
+        if not channel:
+            return await interaction.response.send_message("❌ 先に送信先チャンネルを選択してください。", ephemeral=True)
+
+        try:
+            await database.set_log_channel(interaction.guild_id, log_type, channel.id)
+            self.view.selected_log_type = None
+            self.view.selected_channel = None
+            await update_log_settings_config_view(interaction)
+        except Exception as e:
+            print(f"[ERROR] SaveLogSettingButton: {e}")
+            await interaction.response.send_message(f"❌ エラーが発生しました: {e}", ephemeral=True)
+
+class RemoveLogSettingSelect(discord.ui.Select):
+    def __init__(self, settings, guild: discord.Guild):
+        options = []
+        log_types = {
+            "message_edit": "メッセージ編集",
+            "message_delete": "メッセージ削除",
+            "vc_join_leave": "VC参加・退出",
+            "member_join_leave": "メンバー入退"
+        }
+        for l_type, ch_id in settings.items():
+            ch = guild.get_channel(ch_id)
+            ch_name = f"#{ch.name}" if ch else f"不明なチャンネル (ID: {ch_id})"
+            options.append(discord.SelectOption(
+                label=f"{log_types.get(l_type, l_type)} ➔ {ch_name}",
+                value=l_type,
+                description=f"ログ設定を解除します"
+            ))
+        super().__init__(
+            placeholder="解除するログ設定を選択...",
+            min_values=1,
+            max_values=1,
+            options=options[:25],
+            row=3
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        log_type = self.values[0]
+        await database.remove_log_channel(interaction.guild_id, log_type)
+        await update_log_settings_config_view(interaction)
+
+class LogSettingsConfigView(discord.ui.View):
+    def __init__(self, settings, guild: discord.Guild):
+        super().__init__(timeout=180)
+        self.selected_log_type = None
+        self.selected_channel = None
+        
+        self.add_item(LogTypeSelect())
+        self.add_item(LogChannelSelect())
+        self.add_item(SaveLogSettingButton())
+        if settings:
+            self.add_item(RemoveLogSettingSelect(settings, guild))
+
+async def update_log_settings_config_view(interaction: discord.Interaction):
+    settings = await database.get_all_log_settings(interaction.guild_id)
+    view = LogSettingsConfigView(settings, interaction.guild)
+    
+    embed = discord.Embed(
+        title="📋 サーバーログ設定パネル",
+        description=(
+            "サーバー内で発生する各種イベントのログ送信先を設定します。\n\n"
+            "**【設定手順】**\n"
+            "1. **ログの種類**を選択します。\n"
+            "2. **送信先テキストチャンネル**を選択します。\n"
+            "3. **「ログ設定を保存」**ボタンを押します。\n\n"
+            "**【解除手順】**\n"
+            "一番下の解除用ドロップダウンから、解除したい設定を選択します。"
+        ),
+        color=discord.Color.blue()
+    )
+    
+    log_types = {
+        "message_edit": "📝 メッセージ編集",
+        "message_delete": "🗑️ メッセージ削除",
+        "vc_join_leave": "🎙️ VC参加・退出",
+        "member_join_leave": "👥 メンバー入退"
+    }
+    
+    settings_str = ""
+    for l_type, display_name in log_types.items():
+        ch_id = settings.get(l_type)
+        if ch_id:
+            channel = interaction.guild.get_channel(ch_id)
+            ch_mention = channel.mention if channel else f"⚠️ 不明なチャンネル (ID: `{ch_id}`)"
+        else:
+            ch_mention = "未設定"
+        settings_str += f"• **{display_name}**: {ch_mention}\n"
+        
+    embed.add_field(name="現在の設定一覧", value=settings_str, inline=False)
+    
+    if interaction.is_expired() or interaction.response.is_done():
+        await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=view)
+    else:
+        await interaction.response.edit_message(embed=embed, view=view)
+
+class ManageLogSettingsButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="ログを設定",
+            style=discord.ButtonStyle.secondary,
+            emoji="📋",
+            custom_id="persistent_admin_manage_log_settings_btn"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not has_admin_role(interaction.user) and not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("この操作を実行する権限がありません（運営専用）。", ephemeral=True)
+
+        settings = await database.get_all_log_settings(interaction.guild_id)
+        view = LogSettingsConfigView(settings, interaction.guild)
+        
+        embed = discord.Embed(
+            title="📋 サーバーログ設定パネル",
+            description=(
+                "サーバー内で発生する各種イベントのログ送信先を設定します。\n\n"
+                "**【設定手順】**\n"
+                "1. **ログの種類**を選択します。\n"
+                "2. **送信先テキストチャンネル**を選択します。\n"
+                "3. **「ログ設定を保存」**ボタンを押します。\n\n"
+                "**【解除手順】**\n"
+                "一番下の解除用ドロップダウンから、解除したい設定を選択します。"
+            ),
+            color=discord.Color.blue()
+        )
+        
+        log_types = {
+            "message_edit": "📝 メッセージ編集",
+            "message_delete": "🗑️ メッセージ削除",
+            "vc_join_leave": "🎙️ VC参加・退出",
+            "member_join_leave": "👥 メンバー入退"
+        }
+        
+        settings_str = ""
+        for l_type, display_name in log_types.items():
+            ch_id = settings.get(l_type)
+            if ch_id:
+                channel = interaction.guild.get_channel(ch_id)
+                ch_mention = channel.mention if channel else f"⚠️ 不明なチャンネル (ID: `{ch_id}`)"
+            else:
+                ch_mention = "未設定"
+            settings_str += f"• **{display_name}**: {ch_mention}\n"
+            
+        embed.add_field(name="現在の設定一覧", value=settings_str, inline=False)
+
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
 class PanelSetupView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -3040,6 +3380,7 @@ class PanelSetupView(discord.ui.View):
         self.add_item(ManageVCTriggersButton())
         self.add_item(ManageLevelRolesButton())
         self.add_item(ManageRoomPricesButton())
+        self.add_item(ManageLogSettingsButton())
 
 class AdminGroup(app_commands.Group):
     def __init__(self): super().__init__(name="管理者", description="【管理者専用】管理コマンド")

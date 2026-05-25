@@ -115,6 +115,14 @@ async def setup_db():
                 ticket_prefix TEXT NOT NULL
             )
         ''')
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS log_settings (
+                guild_id BIGINT,
+                log_type VARCHAR(50),
+                channel_id BIGINT,
+                PRIMARY KEY (guild_id, log_type)
+            )
+        ''')
 
 
 async def get_user(user_id: int):
@@ -459,5 +467,34 @@ async def remove_custom_ticket_panel(channel_id: int):
     p = await get_pool()
     async with p.acquire() as conn:
         await conn.execute('DELETE FROM custom_ticket_panels WHERE channel_id = $1', channel_id)
+
+
+# --- ログ設定管理用関数 ---
+async def set_log_channel(guild_id: int, log_type: str, channel_id: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO log_settings (guild_id, log_type, channel_id)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (guild_id, log_type)
+            DO UPDATE SET channel_id = $3
+        ''', guild_id, log_type, channel_id)
+
+async def get_log_channel(guild_id: int, log_type: str) -> int:
+    p = await get_pool()
+    async with p.acquire() as conn:
+        row = await conn.fetchrow('SELECT channel_id FROM log_settings WHERE guild_id = $1 AND log_type = $2', guild_id, log_type)
+        return row['channel_id'] if row else None
+
+async def get_all_log_settings(guild_id: int) -> dict:
+    p = await get_pool()
+    async with p.acquire() as conn:
+        rows = await conn.fetch('SELECT log_type, channel_id FROM log_settings WHERE guild_id = $1', guild_id)
+        return {row['log_type']: row['channel_id'] for row in rows}
+
+async def remove_log_channel(guild_id: int, log_type: str):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('DELETE FROM log_settings WHERE guild_id = $1 AND log_type = $2', guild_id, log_type)
 
 
