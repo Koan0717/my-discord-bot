@@ -155,20 +155,25 @@ def is_xp_enabled(channel):
         cfg = bot.get_rank_config(channel.guild.id)
         whitelist = cfg.get("whitelist", set())
         blacklist = cfg.get("blacklist", set())
-        categories = cfg.get("categories", set())
+        wl_categories = cfg.get("whitelist_categories", set())
+        bl_categories = cfg.get("blacklist_categories", set())
         
-        if not whitelist and not blacklist and not categories:
+        # If no specific settings, fallback to original ranking category logic
+        if not whitelist and not blacklist and not wl_categories and not bl_categories:
             return is_in_ranking_category(channel)
             
+        # Blacklist channel or category takes precedence
         if channel.id in blacklist:
             return False
+        if channel.category and channel.category.id in bl_categories:
+            return False
             
-        has_whitelist = bool(whitelist) or bool(categories)
-        if has_whitelist:
-            in_whitelist = (channel.id in whitelist) or (channel.category and channel.category.id in categories)
+        # Whitelist check (if any whitelist is defined)
+        if whitelist or wl_categories:
+            in_whitelist = (channel.id in whitelist) or (channel.category and channel.category.id in wl_categories)
             if not in_whitelist:
                 return False
-                
+            
         return True
     except Exception as e:
         print(f"[ERROR] Error in is_xp_enabled: {e}")
@@ -251,7 +256,9 @@ class EconomyBot(commands.Bot):
             self.rank_settings[guild_id] = {
                 "whitelist": set(),
                 "blacklist": set(),
-                "categories": set()
+                "categories": set(),
+                "whitelist_categories": set(),
+                "blacklist_categories": set()
             }
         return self.rank_settings[guild_id]
 
@@ -271,14 +278,15 @@ class EconomyBot(commands.Bot):
         except Exception as e:
             print(f"[ERROR] Failed to load evaluation settings from DB: {e}")
 
-        # ランク設定の読み込み
+        # ランク設定の読み込み（カテゴリ別ホワイトリスト/ブラックリスト）
         try:
             db_rank_settings = await database.get_all_rank_settings()
             for s in db_rank_settings:
                 self.rank_settings[s["guild_id"]] = {
-                    "whitelist": set(s["whitelist"]),
-                    "blacklist": set(s["blacklist"]),
-                    "categories": set(s["categories"])
+                    "whitelist": set(s.get("whitelist", [])),
+                    "blacklist": set(s.get("blacklist", [])),
+                    "whitelist_categories": set(s.get("whitelist_categories", [])),
+                    "blacklist_categories": set(s.get("blacklist_categories", []))
                 }
         except Exception as e:
             print(f"[ERROR] Failed to load rank settings from DB: {e}")
