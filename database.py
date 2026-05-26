@@ -2,6 +2,7 @@ import asyncpg
 import datetime
 import os
 import asyncio
+import json
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -63,6 +64,12 @@ async def setup_db():
                 mention_role_ids BIGINT[]
             )
         ''')
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS bot_settings (
+                setting_key TEXT PRIMARY KEY,
+                setting_value TEXT
+            )
+        ''')
         try:
             await conn.execute('ALTER TABLE inquiry_panels ADD COLUMN IF NOT EXISTS mention_role_ids BIGINT[]')
         except Exception as e:
@@ -115,6 +122,14 @@ async def setup_db():
                 ticket_prefix TEXT NOT NULL
             )
         ''')
+        try:
+            await conn.execute("ALTER TABLE custom_ticket_panels ADD COLUMN IF NOT EXISTS button_label TEXT DEFAULT 'チケットを作成する'")
+            await conn.execute("ALTER TABLE custom_ticket_panels ADD COLUMN IF NOT EXISTS button_emoji TEXT")
+            await conn.execute("ALTER TABLE custom_ticket_panels ADD COLUMN IF NOT EXISTS target_role_ids BIGINT[] DEFAULT '{}'::BIGINT[]")
+            await conn.execute("ALTER TABLE custom_ticket_panels ADD COLUMN IF NOT EXISTS ticket_prefix TEXT DEFAULT 'ticket'")
+        except Exception as e:
+            print(f"[Migration] custom_ticket_panels migration warning: {e}")
+
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS log_settings (
                 guild_id BIGINT,
@@ -134,22 +149,14 @@ async def setup_db():
             CREATE TABLE IF NOT EXISTS rank_settings (
                 guild_id BIGINT PRIMARY KEY,
                 whitelist_channel_ids BIGINT[] NOT NULL DEFAULT '{}',
-                blacklist_channel_ids BIGINT[] NOT NULL DEFAULT '{}'
+                blacklist_channel_ids BIGINT[] NOT NULL DEFAULT '{}',
+                whitelist_category_ids BIGINT[] NOT NULL DEFAULT '{}'
             )
         ''')
         try:
-            await conn.execute('ALTER TABLE evaluation_settings ADD COLUMN IF NOT EXISTS forum_channel_ids BIGINT[]')
+            await conn.execute('ALTER TABLE rank_settings ADD COLUMN IF NOT EXISTS whitelist_category_ids BIGINT[] NOT NULL DEFAULT \'{}\'')
         except Exception as e:
-            print(f"[Migration] evaluation_settings migration warning: {e}")
-
-        try:
-            await conn.execute('''
-                UPDATE evaluation_settings 
-                SET forum_channel_ids = ARRAY[forum_channel_id] 
-                WHERE forum_channel_ids IS NULL AND forum_channel_id IS NOT NULL
-            ''')
-        except Exception as e:
-            print(f"[Migration] evaluation_settings data migration warning: {e}")
+            print(f"[Migration] rank_settings migration warning: {e}")
 
 
 async def get_user(user_id: int):
@@ -365,6 +372,30 @@ async def remove_inquiry_panel(channel_id: int):
     async with p.acquire() as conn:
         await conn.execute('DELETE FROM inquiry_panels WHERE channel_id = $1', channel_id)
 
+# --- Bot設定値管理用関数 ---
+async def save_setting(key: str, value):
+    p = await get_pool()
+    val_json = json.dumps(value)
+    async with p.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO bot_settings (setting_key, setting_value)
+            VALUES ($1, $2)
+            ON CONFLICT (setting_key)
+            DO UPDATE SET setting_value = $2
+        ''', key, val_json)
+
+async def load_settings() -> dict:
+    p = await get_pool()
+    settings = {}
+    async with p.acquire() as conn:
+        rows = await conn.fetch('SELECT setting_key, setting_value FROM bot_settings')
+        for r in rows:
+            try:
+                settings[r['setting_key']] = json.loads(r['setting_value'])
+            except Exception:
+                pass
+    return settings
+
 # --- レベルロール報酬管理用関数 ---
 async def add_level_role_reward(level_type: str, level: int, role_id: int):
     p = await get_pool()
@@ -440,7 +471,6 @@ async def remove_anonymous_chat(channel_id: int):
     async with p.acquire() as conn:
         await conn.execute('DELETE FROM anonymous_chats WHERE panel_channel_id = $1 OR dest_channel_id = $1', channel_id)
 
-
 # --- カスタムチケットパネル管理用関数 ---
 async def add_custom_ticket_panel(
     channel_id: int,
@@ -496,7 +526,6 @@ async def remove_custom_ticket_panel(channel_id: int):
         await conn.execute('DELETE FROM custom_ticket_panels WHERE channel_id = $1', channel_id)
 
 
-# --- ログ設定管理用関数 ---
 async def set_log_channel(guild_id: int, log_type: str, channel_id: int):
     p = await get_pool()
     async with p.acquire() as conn:
@@ -558,37 +587,39 @@ async def set_evaluation_settings(guild_id: int, forum_channel_ids: list[int], s
 async def get_rank_settings(guild_id: int) -> dict:
     p = await get_pool()
     async with p.acquire() as conn:
-        row = await conn.fetchrow('SELECT whitelist_channel_ids, blacklist_channel_ids FROM rank_settings WHERE guild_id = $1', guild_id)
+        row = await conn.fetchrow('SELECT whitelist_channel_ids, blacklist_channel_ids, whitelist_category_ids FROM rank_settings WHERE guild_id = $1', guild_id)
         if row:
             return {
                 "whitelist": row["whitelist_channel_ids"] or [],
-                "blacklist": row["blacklist_channel_ids"] or []
+                "blacklist": row["blacklist_channel_ids"] or [],
+                "categories": row["whitelist_category_ids"] or []
             }
         else:
-            await conn.execute('INSERT INTO rank_settings (guild_id, whitelist_channel_ids, blacklist_channel_ids) VALUES ($1, $2, $3) ON CONFLICT (guild_id) DO NOTHING', guild_id, [], [])
-            return {"whitelist": [], "blacklist": []}
+            await conn.execute('INSERT INTO rank_settings (guild_id, whitelist_channel_ids, blacklist_channel_ids, whitelist_category_ids) VALUES ($1, $2, $3, $4) ON CONFLICT (guild_id) DO NOTHING', guild_id, [], [], [])
+            return {"whitelist": [], "blacklist": [], "categories": []}
 
 async def get_all_rank_settings() -> list[dict]:
     p = await get_pool()
     async with p.acquire() as conn:
-        rows = await conn.fetch('SELECT guild_id, whitelist_channel_ids, blacklist_channel_ids FROM rank_settings')
+        rows = await conn.fetch('SELECT guild_id, whitelist_channel_ids, blacklist_channel_ids, whitelist_category_ids FROM rank_settings')
         return [
             {
                 "guild_id": r["guild_id"],
                 "whitelist": r["whitelist_channel_ids"] or [],
-                "blacklist": r["blacklist_channel_ids"] or []
+                "blacklist": r["blacklist_channel_ids"] or [],
+                "categories": r["whitelist_category_ids"] or []
             }
             for r in rows
         ]
 
-async def set_rank_settings(guild_id: int, whitelist_ids: list[int], blacklist_ids: list[int]):
+async def set_rank_settings(guild_id: int, whitelist_ids: list[int], blacklist_ids: list[int], category_ids: list[int]):
     p = await get_pool()
     async with p.acquire() as conn:
         await conn.execute('''
-            INSERT INTO rank_settings (guild_id, whitelist_channel_ids, blacklist_channel_ids)
-            VALUES ($1, $2, $3)
+            INSERT INTO rank_settings (guild_id, whitelist_channel_ids, blacklist_channel_ids, whitelist_category_ids)
+            VALUES ($1, $2, $3, $4)
             ON CONFLICT (guild_id)
-            DO UPDATE SET whitelist_channel_ids = $2, blacklist_channel_ids = $3
-        ''', guild_id, whitelist_ids, blacklist_ids)
+            DO UPDATE SET whitelist_channel_ids = $2, blacklist_channel_ids = $3, whitelist_category_ids = $4
+        ''', guild_id, whitelist_ids, blacklist_ids, category_ids)
 
 
