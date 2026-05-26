@@ -150,11 +150,16 @@ async def setup_db():
                 guild_id BIGINT PRIMARY KEY,
                 whitelist_channel_ids BIGINT[] NOT NULL DEFAULT '{}',
                 blacklist_channel_ids BIGINT[] NOT NULL DEFAULT '{}',
-                whitelist_category_ids BIGINT[] NOT NULL DEFAULT '{}'
+                whitelist_category_ids BIGINT[] NOT NULL DEFAULT '{}',
+                blacklist_category_ids BIGINT[] NOT NULL DEFAULT '{}'
             )
         ''')
         try:
             await conn.execute('ALTER TABLE rank_settings ADD COLUMN IF NOT EXISTS whitelist_category_ids BIGINT[] NOT NULL DEFAULT \'{}\'')
+        except Exception as e:
+            print(f"[Migration] rank_settings migration warning: {e}")
+        try:
+            await conn.execute('ALTER TABLE rank_settings ADD COLUMN IF NOT EXISTS blacklist_category_ids BIGINT[] NOT NULL DEFAULT \'{}\'')
         except Exception as e:
             print(f"[Migration] rank_settings migration warning: {e}")
 
@@ -587,39 +592,41 @@ async def set_evaluation_settings(guild_id: int, forum_channel_ids: list[int], s
 async def get_rank_settings(guild_id: int) -> dict:
     p = await get_pool()
     async with p.acquire() as conn:
-        row = await conn.fetchrow('SELECT whitelist_channel_ids, blacklist_channel_ids, whitelist_category_ids FROM rank_settings WHERE guild_id = $1', guild_id)
+        row = await conn.fetchrow('SELECT whitelist_channel_ids, blacklist_channel_ids, whitelist_category_ids, blacklist_category_ids FROM rank_settings WHERE guild_id = $1', guild_id)
         if row:
             return {
                 "whitelist": row["whitelist_channel_ids"] or [],
                 "blacklist": row["blacklist_channel_ids"] or [],
-                "categories": row["whitelist_category_ids"] or []
+                "whitelist_categories": row["whitelist_category_ids"] or [],
+                "blacklist_categories": row["blacklist_category_ids"] or []
             }
         else:
-            await conn.execute('INSERT INTO rank_settings (guild_id, whitelist_channel_ids, blacklist_channel_ids, whitelist_category_ids) VALUES ($1, $2, $3, $4) ON CONFLICT (guild_id) DO NOTHING', guild_id, [], [], [])
-            return {"whitelist": [], "blacklist": [], "categories": []}
+            await conn.execute('INSERT INTO rank_settings (guild_id, whitelist_channel_ids, blacklist_channel_ids, whitelist_category_ids, blacklist_category_ids) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (guild_id) DO NOTHING', guild_id, [], [], [], [])
+            return {"whitelist": [], "blacklist": [], "whitelist_categories": [], "blacklist_categories": []}
 
 async def get_all_rank_settings() -> list[dict]:
     p = await get_pool()
     async with p.acquire() as conn:
-        rows = await conn.fetch('SELECT guild_id, whitelist_channel_ids, blacklist_channel_ids, whitelist_category_ids FROM rank_settings')
+        rows = await conn.fetch('SELECT guild_id, whitelist_channel_ids, blacklist_channel_ids, whitelist_category_ids, blacklist_category_ids FROM rank_settings')
         return [
             {
                 "guild_id": r["guild_id"],
                 "whitelist": r["whitelist_channel_ids"] or [],
                 "blacklist": r["blacklist_channel_ids"] or [],
-                "categories": r["whitelist_category_ids"] or []
+                "whitelist_categories": r["whitelist_category_ids"] or [],
+                "blacklist_categories": r["blacklist_category_ids"] or []
             }
             for r in rows
         ]
 
-async def set_rank_settings(guild_id: int, whitelist_ids: list[int], blacklist_ids: list[int], category_ids: list[int]):
+async def set_rank_settings(guild_id: int, whitelist_ids: list[int], blacklist_ids: list[int], whitelist_cat_ids: list[int], blacklist_cat_ids: list[int]):
     p = await get_pool()
     async with p.acquire() as conn:
         await conn.execute('''
-            INSERT INTO rank_settings (guild_id, whitelist_channel_ids, blacklist_channel_ids, whitelist_category_ids)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO rank_settings (guild_id, whitelist_channel_ids, blacklist_channel_ids, whitelist_category_ids, blacklist_category_ids)
+            VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (guild_id)
-            DO UPDATE SET whitelist_channel_ids = $2, blacklist_channel_ids = $3, whitelist_category_ids = $4
-        ''', guild_id, whitelist_ids, blacklist_ids, category_ids)
+            DO UPDATE SET whitelist_channel_ids = $2, blacklist_channel_ids = $3, whitelist_category_ids = $4, blacklist_category_ids = $5
+        ''', guild_id, whitelist_ids, blacklist_ids, whitelist_cat_ids, blacklist_cat_ids)
 
 
