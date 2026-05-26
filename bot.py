@@ -220,6 +220,7 @@ class EconomyBot(commands.Bot):
                     member = m
                     break
             
+            if member:
                 # ランク設定に基づきXP獲得可能か判定
                 if not self.is_xp_enabled(member.voice.channel):
                     # 条件を満たしていない場合はセッションを終了
