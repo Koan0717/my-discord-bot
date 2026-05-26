@@ -98,6 +98,7 @@ class EconomyBot(commands.Bot):
         self.empty_custom_vcs = {}  # {channel_id: empty_since_timestamp}
         self.auto_vc_triggers = set()
         self.evaluation_settings = {}  # {guild_id: {"forum_channel_id": int, "self_intro_channel_ids": set}}
+        self.rank_settings = {}  # {guild_id: {"whitelist": set, "blacklist": set}}
 
     async def setup_hook(self):
         await database.setup_db()
@@ -129,6 +130,17 @@ class EconomyBot(commands.Bot):
                 }
         except Exception as e:
             print(f"[ERROR] Failed to load evaluation settings from DB: {e}")
+
+        # ランク設定の読み込み
+        try:
+            db_rank_settings = await database.get_all_rank_settings()
+            for s in db_rank_settings:
+                self.rank_settings[s["guild_id"]] = {
+                    "whitelist": set(s["whitelist"]),
+                    "blacklist": set(s["blacklist"])
+                }
+        except Exception as e:
+            print(f"[ERROR] Failed to load rank settings from DB: {e}")
 
         self.add_view(RoomView())
         self.add_view(CustomRoomView())
@@ -208,12 +220,8 @@ class EconomyBot(commands.Bot):
                     member = m
                     break
             
-            if member:
-                # カテゴリーのチェック (部分一致・大文字小文字無視)
-                category_name = member.voice.channel.category.name if member.voice.channel and member.voice.channel.category else "なし"
-                in_correct_category = RANKING_CATEGORY_NAME.lower() in category_name.lower()
-                
-                if not in_correct_category:
+                # ランク設定に基づきXP獲得可能か判定
+                if not self.is_xp_enabled(member.voice.channel):
                     # 条件を満たしていない場合はセッションを終了
                     self.vc_sessions.pop(user_id, None)
                     continue
@@ -221,7 +229,7 @@ class EconomyBot(commands.Bot):
                 elapsed_minutes = int((now - last_reward_time).total_seconds() / 60)
                 if elapsed_minutes >= 1:
                     xp_reward = elapsed_minutes * VC_XP_PER_MIN
-                    print(f"[DEBUG] VC XP Awarding: {member.display_name} in {category_name}")
+                    print(f"[DEBUG] VC XP Awarding: {member.display_name} in {member.voice.channel.name}")
                     new_lv = await database.add_xp(user_id, xp_reward, "vc")
                     
                     # 更新
@@ -244,6 +252,46 @@ class EconomyBot(commands.Bot):
                 "self_intro_channel_ids": set(SELF_INTRO_CHANNEL_IDS)
             }
         return self.evaluation_settings[guild_id]
+
+    def get_rank_config(self, guild_id: int) -> dict:
+        if guild_id not in self.rank_settings:
+            self.rank_settings[guild_id] = {
+                "whitelist": set(),
+                "blacklist": set()
+            }
+        return self.rank_settings[guild_id]
+
+    def is_xp_enabled(self, channel) -> bool:
+        if not channel or not channel.guild:
+            return False
+        cfg = self.get_rank_config(channel.guild.id)
+        whitelist = cfg["whitelist"]
+        blacklist = cfg["blacklist"]
+        
+        check_ids = {channel.id}
+        if hasattr(channel, "parent_id") and channel.parent_id:
+            check_ids.add(channel.parent_id)
+        elif hasattr(channel, "parent") and channel.parent:
+            check_ids.add(channel.parent.id)
+            
+        if hasattr(channel, "category_id") and channel.category_id:
+            check_ids.add(channel.category_id)
+        elif hasattr(channel, "category") and channel.category:
+            check_ids.add(channel.category.id)
+            
+        is_in_whitelist = not check_ids.isdisjoint(whitelist)
+        is_in_blacklist = not check_ids.isdisjoint(blacklist)
+        
+        if not whitelist: # 有効なチャンネルの選択がなかった場合
+            # 無効にしたチャンネル以外を対象とする
+            return not is_in_blacklist
+        else: # 有効なチャンネルの選択があった場合
+            if not blacklist: # 無効なチャンネルの選択がなかった場合
+                # 有効にしたチャンネルだけを対象とする
+                return is_in_whitelist
+            else: # 両方設定されている場合
+                # 有効なチャンネルに入っており、かつ無効なチャンネルに入っていない
+                return is_in_whitelist and not is_in_blacklist
 
 bot = EconomyBot()
 
@@ -374,16 +422,12 @@ async def on_message(message):
     user_id = message.author.id
     now = datetime.datetime.now(JST)
 
-    # 1. 通貨報酬の判定 (廃止済み)
     # 2. TC経験値の判定
-    # カテゴリーのチェック (部分一致・大文字小文字無視)
-    category_name = message.channel.category.name if message.channel.category else "なし"
-    in_correct_category = RANKING_CATEGORY_NAME.lower() in category_name.lower()
-
-    if in_correct_category:
+    guild = message.guild
+    if guild and bot.is_xp_enabled(message.channel):
         last_xp_time = bot.tc_xp_cooldowns.get(user_id)
         if not last_xp_time or (now - last_xp_time).total_seconds() > TC_XP_COOLDOWN:
-            print(f"[DEBUG] TC XP Awarding: {message.author.display_name} in {category_name}")
+            print(f"[DEBUG] TC XP Awarding: {message.author.display_name} in {message.channel.name}")
             new_lv = await database.add_xp(user_id, TC_XP_REWARD, "tc")
             bot.tc_xp_cooldowns[user_id] = now
             if new_lv:
@@ -484,12 +528,9 @@ async def on_voice_state_update(member, before, after):
         if after.channel is not None:
             is_join = before.channel is None or before.channel.id != after.channel.id
             if is_join:
-                # カテゴリーのチェックを満たす場合のみセッション開始
-                category_name = after.channel.category.name if after.channel.category else ""
-                in_correct_category = RANKING_CATEGORY_NAME in category_name
-                
-                if in_correct_category:
-                    print(f"[VC XP] Started session for {member.display_name}")
+                # ランク設定に基づきXP獲得可能か判定
+                if bot.is_xp_enabled(after.channel):
+                    print(f"[VC XP] Started session for {member.display_name} in {after.channel.name}")
                     bot.vc_sessions[user_id] = now_aware
             
             if after.channel.id in bot.auto_vc_triggers:
@@ -3594,6 +3635,335 @@ class ManageEvaluationSettingsButton(discord.ui.Button):
         bot = interaction.client
         await update_evaluation_settings_config_view(interaction, bot)
 
+
+# --- ランク設定用ビュー・ボタン・セレクト ---
+
+async def update_rank_settings_config_view(interaction: discord.Interaction, bot):
+    cfg = bot.get_rank_config(interaction.guild_id)
+    view = RankSettingsConfigView(bot, interaction.guild_id)
+    
+    embed = discord.Embed(
+        title="📊 ランク対象設定 (TC/VC XP)",
+        description=(
+            "テキスト（TC）およびボイス（VC）の経験値が貯まるチャンネルを設定します。\n\n"
+            "**【判定ルール】**\n"
+            "1. **対応チャンネル（有効）の指定がない場合**: 非対応チャンネル**以外**すべてが対象になります。\n"
+            "2. **非対応チャンネル（無効）の指定がない場合**: 対応チャンネル**のみ**が対象になります。\n"
+            "3. **両方指定されている場合**: 対応チャンネルに含まれ、かつ非対応チャンネルに含まれないチャンネルが対象になります。\n"
+            "4. **どちらも指定がない場合**: すべてのチャンネルが対象になります。\n\n"
+            "**【設定手順】**\n"
+            "- 下のメニューから対応/非対応チャンネルをそれぞれ選択して追加・変更できます（各最大25個）。\n"
+            "- 各「クリア」ボタンで設定を初期化できます。"
+        ),
+        color=discord.Color.blue()
+    )
+    
+    whitelist_strs = []
+    for cid in cfg["whitelist"]:
+        ch = interaction.guild.get_channel(cid)
+        if ch:
+            whitelist_strs.append(ch.mention)
+        else:
+            whitelist_strs.append(f"⚠️ 不明なチャンネル (ID: `{cid}`)")
+    whitelist_ch_str = ", ".join(whitelist_strs) if whitelist_strs else "登録されている対応（有効）チャンネルはありません。"
+    
+    blacklist_strs = []
+    for cid in cfg["blacklist"]:
+        ch = interaction.guild.get_channel(cid)
+        if ch:
+            blacklist_strs.append(ch.mention)
+        else:
+            blacklist_strs.append(f"⚠️ 不明なチャンネル (ID: `{cid}`)")
+    blacklist_ch_str = ", ".join(blacklist_strs) if blacklist_strs else "登録されている非対応（無効）チャンネルはありません。"
+    
+    embed.add_field(name="現在の設定一覧", value=f"• **対応チャンネル (有効)**: {whitelist_ch_str}\n• **非対応チャンネル (無効)**: {blacklist_ch_str}", inline=False)
+    
+    if interaction.is_expired() or interaction.response.is_done():
+        await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=view)
+    else:
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class WhitelistChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self, bot, guild_id):
+        super().__init__(
+            placeholder="対応チャンネル (有効) を選択/変更...",
+            channel_types=[
+                discord.ChannelType.text,
+                discord.ChannelType.voice,
+                discord.ChannelType.news,
+                discord.ChannelType.forum,
+                discord.ChannelType.category,
+                discord.ChannelType.stage_voice
+            ],
+            min_values=1,
+            max_values=25,
+            row=0
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        bot = interaction.client
+        cfg = bot.get_rank_config(interaction.guild_id)
+        
+        new_ids = {ch.id for ch in self.values}
+        cfg["whitelist"] = new_ids
+        
+        await database.set_rank_settings(interaction.guild_id, list(cfg["whitelist"]), list(cfg["blacklist"]))
+        await update_rank_settings_config_view(interaction, bot)
+
+
+class BlacklistChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self, bot, guild_id):
+        super().__init__(
+            placeholder="非対応チャンネル (無効) を選択/変更...",
+            channel_types=[
+                discord.ChannelType.text,
+                discord.ChannelType.voice,
+                discord.ChannelType.news,
+                discord.ChannelType.forum,
+                discord.ChannelType.category,
+                discord.ChannelType.stage_voice
+            ],
+            min_values=1,
+            max_values=25,
+            row=1
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        bot = interaction.client
+        cfg = bot.get_rank_config(interaction.guild_id)
+        
+        new_ids = {ch.id for ch in self.values}
+        cfg["blacklist"] = new_ids
+        
+        await database.set_rank_settings(interaction.guild_id, list(cfg["whitelist"]), list(cfg["blacklist"]))
+        await update_rank_settings_config_view(interaction, bot)
+
+
+class ClearWhitelistButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="対応リストをクリア",
+            style=discord.ButtonStyle.danger,
+            emoji="🧹",
+            row=2
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        bot = interaction.client
+        cfg = bot.get_rank_config(interaction.guild_id)
+        cfg["whitelist"] = set()
+        await database.set_rank_settings(interaction.guild_id, [], list(cfg["blacklist"]))
+        await update_rank_settings_config_view(interaction, bot)
+
+
+class ClearBlacklistButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="非対応リストをクリア",
+            style=discord.ButtonStyle.danger,
+            emoji="🧹",
+            row=2
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        bot = interaction.client
+        cfg = bot.get_rank_config(interaction.guild_id)
+        cfg["blacklist"] = set()
+        await database.set_rank_settings(interaction.guild_id, list(cfg["whitelist"]), [])
+        await update_rank_settings_config_view(interaction, bot)
+
+
+class BackToAdminPanelButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="戻る",
+            style=discord.ButtonStyle.secondary,
+            emoji="⬅️",
+            row=3
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        bot = interaction.client
+        await update_main_admin_panel(interaction, bot)
+
+
+class RankSettingsConfigView(discord.ui.View):
+    def __init__(self, bot, guild_id):
+        super().__init__(timeout=180)
+        self.add_item(WhitelistChannelSelect(bot, guild_id))
+        self.add_item(BlacklistChannelSelect(bot, guild_id))
+        self.add_item(ClearWhitelistButton())
+        self.add_item(ClearBlacklistButton())
+        self.add_item(BackToAdminPanelButton())
+
+
+class ManageRankSettingsButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="ランク設定を設定",
+            style=discord.ButtonStyle.secondary,
+            emoji="📊",
+            custom_id="persistent_admin_manage_rank_settings_btn"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not has_admin_role(interaction.user) and not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("この操作を実行する権限がありません（運営専用）。", ephemeral=True)
+
+        bot = interaction.client
+        await update_rank_settings_config_view(interaction, bot)
+
+
+async def update_main_admin_panel(interaction: discord.Interaction, bot):
+    embed = discord.Embed(
+        title="⚙️ サーバー設定・パネル設置",
+        description="下のメニューから設置したいパネルを選択してください。現在の設定情報は以下の通りです。",
+        color=0x2f3136
+    )
+    
+    # 経済
+    embed.add_field(
+        name="💰 経済設定",
+        value=f"通貨名: **{CURRENCY_NAME}**\n初期所持金: **{INITIAL_COINS} {CURRENCY_NAME}**",
+        inline=False
+    )
+    
+    # 宿・カスタムVC
+    embed.add_field(
+        name="🏨 部屋・宿設定",
+        value=(
+            f"🛖 **一般宿** (無料ロール: {', '.join(FREE_INN_ROLE_NAMES)}):\n"
+            f"  ┗ 12時間: {ROOM_SETTINGS['宿'][12]['price']:,} {CURRENCY_NAME}\n"
+            f"  ┗ 24時間: {ROOM_SETTINGS['宿'][24]['price']:,} {CURRENCY_NAME}\n"
+            f"🏰 **高級宿**:\n"
+            f"  ┗ 12時間: {ROOM_SETTINGS['高級宿'][12]['price']:,} {CURRENCY_NAME}\n"
+            f"  ┗ 24時間: {ROOM_SETTINGS['高級宿'][24]['price']:,} {CURRENCY_NAME}\n"
+            f"✨ **カスタムVC**:\n"
+            f"  ┗ 24時間: {ROOM_SETTINGS['カスタムVC'][24]['price']:,} {CURRENCY_NAME}"
+        ),
+        inline=False
+    )
+    
+    # ロール・メンバーシップ
+    embed.add_field(
+        name="👥 ロール設定",
+        value=(
+            f"入界後ロール: **{NEW_MEMBER_ROLE_NAME}**\n"
+            f"待機者ロール: **{PENDING_MEMBER_ROLE_NAME}**\n"
+            f"面接官ロール: **{', '.join(INTERVIEWER_ROLE_NAMES)}**"
+        ),
+        inline=False
+    )
+    
+    # 制作・告解
+    embed.add_field(
+        name="🎨 制作・告解設定",
+        value=(
+            f"紋章師ロール: **{EMBLEM_MANAGER_ROLE_NAME}**, **{EMBLEM_MASTER_ROLE_NAME}**\n"
+            f"司祭ロール: **{CONFESSION_PRIEST_ROLE_NAME}**, **{PRIEST_ROLE_NAME}**"
+        ),
+        inline=False
+    )
+    
+    # VC作成トリガー
+    triggers_str = ""
+    for tid in bot.auto_vc_triggers:
+        ch = bot.get_channel(tid)
+        if ch:
+            triggers_str += f"• {ch.mention} (ID: `{tid}`)\n"
+        else:
+            triggers_str += f"• ⚠️ 不明なチャンネル (ID: `{tid}`)\n"
+    if not triggers_str:
+        triggers_str = "登録されているトリガーチャンネルはありません。"
+        
+    embed.add_field(
+        name="🎙️ VC作成トリガー設定",
+        value=triggers_str,
+        inline=False
+    )
+    
+    # レベルロール報酬設定
+    rewards = await database.get_level_role_rewards()
+    rewards_str = ""
+    for r in rewards:
+        ltype = "💬 TC" if r["level_type"] == "tc" else "🎙️ VC"
+        role = interaction.guild.get_role(r["role_id"])
+        role_name = role.mention if role else f"不明なロール (ID: {r['role_id']})"
+        rewards_str += f"• **{ltype}** Lv.{r['level']} ➔ {role_name}\n"
+    if not rewards_str:
+        rewards_str = "登録されているレベルロール報酬はありません。"
+        
+    embed.add_field(
+        name="🎁 レベルロール設定",
+        value=rewards_str,
+        inline=False
+    )
+    
+    # 自己紹介・評価設定
+    cfg = bot.get_evaluation_config(interaction.guild.id)
+    forum_strs = []
+    for fid in cfg["forum_channel_ids"]:
+        ch = interaction.guild.get_channel(fid)
+        if ch:
+            forum_strs.append(ch.mention)
+        else:
+            forum_strs.append(f"⚠️ 不明なチャンネル (ID: `{fid}`)")
+    forum_ch_str = ", ".join(forum_strs) if forum_strs else "未設定"
+    
+    self_intro_strs = []
+    for cid in cfg["self_intro_channel_ids"]:
+        ch = interaction.guild.get_channel(cid)
+        if ch:
+            self_intro_strs.append(ch.mention)
+        else:
+            self_intro_strs.append(f"⚠️ 不明なチャンネル (ID: `{cid}`)")
+    self_intro_ch_str = ", ".join(self_intro_strs) if self_intro_strs else "未設定"
+
+    embed.add_field(
+        name="📋 自己紹介・評価設定",
+        value=(
+            f"評価用フォーラム: {forum_ch_str}\n"
+            f"自己紹介チャンネル: {self_intro_ch_str}"
+        ),
+        inline=False
+    )
+
+    # ランク設定
+    rank_cfg = bot.get_rank_config(interaction.guild.id)
+    whitelist_strs = []
+    for cid in rank_cfg["whitelist"]:
+        ch = interaction.guild.get_channel(cid)
+        if ch:
+            whitelist_strs.append(ch.mention)
+        else:
+            whitelist_strs.append(f"⚠️ 不明なチャンネル (ID: `{cid}`)")
+    whitelist_ch_str = ", ".join(whitelist_strs) if whitelist_strs else "未設定 (無効チャンネル以外が対象)"
+
+    blacklist_strs = []
+    for cid in rank_cfg["blacklist"]:
+        ch = interaction.guild.get_channel(cid)
+        if ch:
+            blacklist_strs.append(ch.mention)
+        else:
+            blacklist_strs.append(f"⚠️ 不明なチャンネル (ID: `{cid}`)")
+    blacklist_ch_str = ", ".join(blacklist_strs) if blacklist_strs else "未設定 (制限なし)"
+
+    embed.add_field(
+        name="📊 ランク設定 (TC/VC XP対象)",
+        value=(
+            f"• **対応チャンネル (有効)**: {whitelist_ch_str}\n"
+            f"• **非対応チャンネル (無効)**: {blacklist_ch_str}"
+        ),
+        inline=False
+    )
+
+    view = PanelSetupView()
+    if interaction.is_expired() or interaction.response.is_done():
+        await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=view)
+    else:
+        await interaction.response.edit_message(embed=embed, view=view)
+
 class PanelSetupView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -3603,6 +3973,7 @@ class PanelSetupView(discord.ui.View):
         self.add_item(ManageRoomPricesButton())
         self.add_item(ManageLogSettingsButton())
         self.add_item(ManageEvaluationSettingsButton())
+        self.add_item(ManageRankSettingsButton())
 
 class AdminGroup(app_commands.Group):
     def __init__(self): super().__init__(name="管理者", description="【管理者専用】管理コマンド")
@@ -3719,6 +4090,35 @@ class AdminGroup(app_commands.Group):
             value=(
                 f"評価用フォーラム: {forum_ch_str}\n"
                 f"自己紹介チャンネル: {self_intro_ch_str}"
+            ),
+            inline=False
+        )
+
+        # ランク設定の表示を追加
+        rank_cfg = interaction.client.get_rank_config(interaction.guild.id)
+        whitelist_strs = []
+        for cid in rank_cfg["whitelist"]:
+            ch = interaction.guild.get_channel(cid)
+            if ch:
+                whitelist_strs.append(ch.mention)
+            else:
+                whitelist_strs.append(f"⚠️ 不明なチャンネル (ID: `{cid}`)")
+        whitelist_ch_str = ", ".join(whitelist_strs) if whitelist_strs else "未設定 (無効チャンネル以外が対象)"
+
+        blacklist_strs = []
+        for cid in rank_cfg["blacklist"]:
+            ch = interaction.guild.get_channel(cid)
+            if ch:
+                blacklist_strs.append(ch.mention)
+            else:
+                blacklist_strs.append(f"⚠️ 不明なチャンネル (ID: `{cid}`)")
+        blacklist_ch_str = ", ".join(blacklist_strs) if blacklist_strs else "未設定 (制限なし)"
+
+        embed.add_field(
+            name="📊 ランク設定 (TC/VC XP対象)",
+            value=(
+                f"• **対応チャンネル (有効)**: {whitelist_ch_str}\n"
+                f"• **非対応チャンネル (無効)**: {blacklist_ch_str}"
             ),
             inline=False
         )

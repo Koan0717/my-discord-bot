@@ -130,6 +130,13 @@ async def setup_db():
                 self_intro_channel_ids BIGINT[]
             )
         ''')
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS rank_settings (
+                guild_id BIGINT PRIMARY KEY,
+                whitelist_channel_ids BIGINT[] NOT NULL DEFAULT '{}',
+                blacklist_channel_ids BIGINT[] NOT NULL DEFAULT '{}'
+            )
+        ''')
         try:
             await conn.execute('ALTER TABLE evaluation_settings ADD COLUMN IF NOT EXISTS forum_channel_ids BIGINT[]')
         except Exception as e:
@@ -545,5 +552,43 @@ async def set_evaluation_settings(guild_id: int, forum_channel_ids: list[int], s
             ON CONFLICT (guild_id)
             DO UPDATE SET forum_channel_ids = $2, self_intro_channel_ids = $3
         ''', guild_id, forum_channel_ids, self_intro_channel_ids)
+
+
+# --- ランク対象設定管理用関数 ---
+async def get_rank_settings(guild_id: int) -> dict:
+    p = await get_pool()
+    async with p.acquire() as conn:
+        row = await conn.fetchrow('SELECT whitelist_channel_ids, blacklist_channel_ids FROM rank_settings WHERE guild_id = $1', guild_id)
+        if row:
+            return {
+                "whitelist": row["whitelist_channel_ids"] or [],
+                "blacklist": row["blacklist_channel_ids"] or []
+            }
+        else:
+            await conn.execute('INSERT INTO rank_settings (guild_id, whitelist_channel_ids, blacklist_channel_ids) VALUES ($1, $2, $3) ON CONFLICT (guild_id) DO NOTHING', guild_id, [], [])
+            return {"whitelist": [], "blacklist": []}
+
+async def get_all_rank_settings() -> list[dict]:
+    p = await get_pool()
+    async with p.acquire() as conn:
+        rows = await conn.fetch('SELECT guild_id, whitelist_channel_ids, blacklist_channel_ids FROM rank_settings')
+        return [
+            {
+                "guild_id": r["guild_id"],
+                "whitelist": r["whitelist_channel_ids"] or [],
+                "blacklist": r["blacklist_channel_ids"] or []
+            }
+            for r in rows
+        ]
+
+async def set_rank_settings(guild_id: int, whitelist_ids: list[int], blacklist_ids: list[int]):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO rank_settings (guild_id, whitelist_channel_ids, blacklist_channel_ids)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (guild_id)
+            DO UPDATE SET whitelist_channel_ids = $2, blacklist_channel_ids = $3
+        ''', guild_id, whitelist_ids, blacklist_ids)
 
 
