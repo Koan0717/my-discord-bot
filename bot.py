@@ -97,6 +97,7 @@ class EconomyBot(commands.Bot):
         self.vc_sessions = {}       # {user_id: join_timestamp}
         self.empty_custom_vcs = {}  # {channel_id: empty_since_timestamp}
         self.auto_vc_triggers = set()
+        self.evaluation_settings = {}  # {guild_id: {"forum_channel_id": int, "self_intro_channel_ids": set}}
 
     async def setup_hook(self):
         await database.setup_db()
@@ -117,6 +118,17 @@ class EconomyBot(commands.Bot):
                     ROOM_SETTINGS[rtype][dur]["price"] = price
         except Exception as e:
             print(f"[ERROR] Failed to load room prices from DB: {e}")
+
+        # 評価設定の読み込み
+        try:
+            db_eval_settings = await database.get_all_evaluation_settings()
+            for s in db_eval_settings:
+                self.evaluation_settings[s["guild_id"]] = {
+                    "forum_channel_id": s["forum_channel_id"],
+                    "self_intro_channel_ids": set(s["self_intro_channel_ids"])
+                }
+        except Exception as e:
+            print(f"[ERROR] Failed to load evaluation settings from DB: {e}")
 
         self.add_view(RoomView())
         self.add_view(CustomRoomView())
@@ -223,6 +235,15 @@ class EconomyBot(commands.Bot):
             else:
                 # ユーザーがどのVCにもいない、またはオフライン
                 self.vc_sessions.pop(user_id, None)
+
+    def get_evaluation_config(self, guild_id: int) -> dict:
+        if guild_id not in self.evaluation_settings:
+            # Fallback to hardcoded globals if not configured in DB
+            self.evaluation_settings[guild_id] = {
+                "forum_channel_id": EVALUATION_FORUM_CHANNEL_ID,
+                "self_intro_channel_ids": set(SELF_INTRO_CHANNEL_IDS)
+            }
+        return self.evaluation_settings[guild_id]
 
 bot = EconomyBot()
 
@@ -373,10 +394,13 @@ async def on_message(message):
                     await check_and_assign_level_roles(message.author, "tc", new_lv)
     
     # 3. 自己紹介チャンネルでの発言検知（スレッド自動作成）
-    if message.channel.id in SELF_INTRO_CHANNEL_IDS:
-        human_role = discord.utils.get(message.guild.roles, name=NEW_MEMBER_ROLE_NAME)
-        if human_role and human_role in message.author.roles:
-            forum_channel = bot.get_channel(EVALUATION_FORUM_CHANNEL_ID)
+    guild = message.guild
+    if guild:
+        cfg = bot.get_evaluation_config(guild.id)
+        if cfg["forum_channel_id"] and message.channel.id in cfg["self_intro_channel_ids"]:
+            human_role = discord.utils.get(message.guild.roles, name=NEW_MEMBER_ROLE_NAME)
+            if human_role and human_role in message.author.roles:
+                forum_channel = bot.get_channel(cfg["forum_channel_id"])
             if isinstance(forum_channel, discord.ForumChannel):
                 # 重複チェック: アクティブなスレッド名にユーザー名（アカウント名）が含まれているか
                 duplicate = any(message.author.name in thread.name for thread in forum_channel.threads)
@@ -591,6 +615,19 @@ async def on_guild_channel_delete(channel):
 
     # カスタムチケットパネルが削除された場合、データベースから削除する
     await database.remove_custom_ticket_panel(channel.id)
+
+    # 評価設定のチャンネル削除ハンドラ
+    if channel.guild:
+        cfg = bot.get_evaluation_config(channel.guild.id)
+        changed = False
+        if cfg["forum_channel_id"] == channel.id:
+            cfg["forum_channel_id"] = None
+            changed = True
+        if channel.id in cfg["self_intro_channel_ids"]:
+            cfg["self_intro_channel_ids"].discard(channel.id)
+            changed = True
+        if changed:
+            await database.set_evaluation_settings(channel.guild.id, cfg["forum_channel_id"], list(cfg["self_intro_channel_ids"]))
 
 @bot.event
 async def on_member_update(before, after):
@@ -3373,6 +3410,143 @@ class ManageLogSettingsButton(discord.ui.Button):
 
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
+async def update_evaluation_settings_config_view(interaction: discord.Interaction, bot):
+    cfg = bot.get_evaluation_config(interaction.guild_id)
+    view = EvaluationSettingsConfigView(bot, interaction.guild_id)
+    
+    embed = discord.Embed(
+        title="📋 自己紹介・評価設定パネル",
+        description=(
+            "自己紹介チャンネルと評価用フォーラムの設定を行います。\n\n"
+            "**【設定方法】**\n"
+            "1. **評価用フォーラム**を選択すると、評価用スレッドがそのフォーラムに作成されるようになります。\n"
+            "2. **追加する自己紹介チャンネル**を選択すると、そのチャンネルでの発言検知（スレッド自動作成）の対象に追加されます。\n"
+            "3. **登録済みの自己紹介チャンネルを削除**するには、削除用ドロップダウンを使用してください。"
+        ),
+        color=discord.Color.blue()
+    )
+    
+    forum_ch = interaction.guild.get_channel(cfg["forum_channel_id"]) if cfg["forum_channel_id"] else None
+    forum_ch_str = forum_ch.mention if forum_ch else "未設定"
+    
+    self_intro_strs = []
+    for cid in cfg["self_intro_channel_ids"]:
+        ch = interaction.guild.get_channel(cid)
+        if ch:
+            self_intro_strs.append(ch.mention)
+        else:
+            self_intro_strs.append(f"⚠️ 不明なチャンネル (ID: `{cid}`)")
+    self_intro_ch_str = ", ".join(self_intro_strs) if self_intro_strs else "登録されている自己紹介チャンネルはありません。"
+    
+    embed.add_field(name="現在の設定一覧", value=f"• **評価用フォーラム**: {forum_ch_str}\n• **自己紹介チャンネル**: {self_intro_ch_str}", inline=False)
+    
+    if interaction.is_expired() or interaction.response.is_done():
+        await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=view)
+    else:
+        await interaction.response.edit_message(embed=embed, view=view)
+
+class SelectEvaluationForumSelect(discord.ui.ChannelSelect):
+    def __init__(self):
+        super().__init__(
+            placeholder="評価用フォーラムを選択...",
+            channel_types=[discord.ChannelType.forum],
+            min_values=1,
+            max_values=1,
+            row=0
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        bot = interaction.client
+        channel = self.values[0]
+        cfg = bot.get_evaluation_config(interaction.guild_id)
+        
+        cfg["forum_channel_id"] = channel.id
+        await database.set_evaluation_settings(interaction.guild_id, cfg["forum_channel_id"], list(cfg["self_intro_channel_ids"]))
+        
+        await update_evaluation_settings_config_view(interaction, bot)
+
+class AddSelfIntroChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self):
+        super().__init__(
+            placeholder="追加する自己紹介チャンネルを選択...",
+            channel_types=[discord.ChannelType.text],
+            min_values=1,
+            max_values=1,
+            row=1
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        bot = interaction.client
+        channel = self.values[0]
+        cfg = bot.get_evaluation_config(interaction.guild_id)
+        
+        if channel.id in cfg["self_intro_channel_ids"]:
+            return await interaction.response.send_message(f"❌ {channel.mention} は既に自己紹介チャンネルとして登録されています。", ephemeral=True)
+            
+        cfg["self_intro_channel_ids"].add(channel.id)
+        await database.set_evaluation_settings(interaction.guild_id, cfg["forum_channel_id"], list(cfg["self_intro_channel_ids"]))
+        
+        await update_evaluation_settings_config_view(interaction, bot)
+
+class RemoveSelfIntroChannelSelect(discord.ui.Select):
+    def __init__(self, bot, guild_id):
+        cfg = bot.get_evaluation_config(guild_id)
+        options = []
+        guild = bot.get_guild(guild_id)
+        for cid in cfg["self_intro_channel_ids"]:
+            ch = guild.get_channel(cid) if guild else None
+            name = ch.name if ch else f"不明なチャンネル ({cid})"
+            options.append(discord.SelectOption(
+                label=name,
+                value=str(cid),
+                description=f"ID: {cid}"
+            ))
+        super().__init__(
+            placeholder="削除する自己紹介チャンネルを選択...",
+            min_values=1,
+            max_values=1,
+            options=options[:25],
+            row=2
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        bot = interaction.client
+        channel_id = int(self.values[0])
+        cfg = bot.get_evaluation_config(interaction.guild_id)
+        
+        if channel_id not in cfg["self_intro_channel_ids"]:
+            return await interaction.response.send_message(f"❌ そのチャンネルは登録されていません。", ephemeral=True)
+            
+        cfg["self_intro_channel_ids"].discard(channel_id)
+        await database.set_evaluation_settings(interaction.guild_id, cfg["forum_channel_id"], list(cfg["self_intro_channel_ids"]))
+        
+        await update_evaluation_settings_config_view(interaction, bot)
+
+class EvaluationSettingsConfigView(discord.ui.View):
+    def __init__(self, bot, guild_id):
+        super().__init__(timeout=180)
+        self.add_item(SelectEvaluationForumSelect())
+        self.add_item(AddSelfIntroChannelSelect())
+        cfg = bot.get_evaluation_config(guild_id)
+        if cfg["self_intro_channel_ids"]:
+            self.add_item(RemoveSelfIntroChannelSelect(bot, guild_id))
+
+class ManageEvaluationSettingsButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="自己紹介・評価を設定",
+            style=discord.ButtonStyle.secondary,
+            emoji="📋",
+            custom_id="persistent_admin_manage_evaluation_settings_btn"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not has_admin_role(interaction.user) and not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("この操作を実行する権限がありません（運営専用）。", ephemeral=True)
+
+        bot = interaction.client
+        await update_evaluation_settings_config_view(interaction, bot)
+
 class PanelSetupView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -3381,6 +3555,7 @@ class PanelSetupView(discord.ui.View):
         self.add_item(ManageLevelRolesButton())
         self.add_item(ManageRoomPricesButton())
         self.add_item(ManageLogSettingsButton())
+        self.add_item(ManageEvaluationSettingsButton())
 
 class AdminGroup(app_commands.Group):
     def __init__(self): super().__init__(name="管理者", description="【管理者専用】管理コマンド")
@@ -3472,7 +3647,31 @@ class AdminGroup(app_commands.Group):
             inline=False
         )
         
+        # 自己紹介・評価設定
+        cfg = interaction.client.get_evaluation_config(interaction.guild.id)
+        forum_ch = interaction.guild.get_channel(cfg["forum_channel_id"]) if cfg["forum_channel_id"] else None
+        forum_ch_str = forum_ch.mention if forum_ch else "未設定"
+        
+        self_intro_strs = []
+        for cid in cfg["self_intro_channel_ids"]:
+            ch = interaction.guild.get_channel(cid)
+            if ch:
+                self_intro_strs.append(ch.mention)
+            else:
+                self_intro_strs.append(f"⚠️ 不明なチャンネル (ID: `{cid}`)")
+        self_intro_ch_str = ", ".join(self_intro_strs) if self_intro_strs else "未設定"
+
+        embed.add_field(
+            name="📋 自己紹介・評価設定",
+            value=(
+                f"評価用フォーラム: {forum_ch_str}\n"
+                f"自己紹介チャンネル: {self_intro_ch_str}"
+            ),
+            inline=False
+        )
+
         view = PanelSetupView()
+
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @app_commands.command(name="ランクリセット", description="ランクを初期化します")

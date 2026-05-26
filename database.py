@@ -123,6 +123,13 @@ async def setup_db():
                 PRIMARY KEY (guild_id, log_type)
             )
         ''')
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS evaluation_settings (
+                guild_id BIGINT PRIMARY KEY,
+                forum_channel_id BIGINT,
+                self_intro_channel_ids BIGINT[]
+            )
+        ''')
 
 
 async def get_user(user_id: int):
@@ -496,5 +503,34 @@ async def remove_log_channel(guild_id: int, log_type: str):
     p = await get_pool()
     async with p.acquire() as conn:
         await conn.execute('DELETE FROM log_settings WHERE guild_id = $1 AND log_type = $2', guild_id, log_type)
+
+
+# --- 自己紹介・評価設定管理用関数 ---
+async def get_evaluation_settings(guild_id: int) -> dict:
+    p = await get_pool()
+    async with p.acquire() as conn:
+        row = await conn.fetchrow('SELECT forum_channel_id, self_intro_channel_ids FROM evaluation_settings WHERE guild_id = $1', guild_id)
+        if row:
+            return {
+                "forum_channel_id": row["forum_channel_id"],
+                "self_intro_channel_ids": row["self_intro_channel_ids"] or []
+            }
+        return None
+
+async def get_all_evaluation_settings() -> list[dict]:
+    p = await get_pool()
+    async with p.acquire() as conn:
+        rows = await conn.fetch('SELECT guild_id, forum_channel_id, self_intro_channel_ids FROM evaluation_settings')
+        return [{"guild_id": r["guild_id"], "forum_channel_id": r["forum_channel_id"], "self_intro_channel_ids": r["self_intro_channel_ids"] or []} for r in rows]
+
+async def set_evaluation_settings(guild_id: int, forum_channel_id: int, self_intro_channel_ids: list[int]):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO evaluation_settings (guild_id, forum_channel_id, self_intro_channel_ids)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (guild_id)
+            DO UPDATE SET forum_channel_id = $2, self_intro_channel_ids = $3
+        ''', guild_id, forum_channel_id, self_intro_channel_ids)
 
 
