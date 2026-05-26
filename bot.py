@@ -3679,8 +3679,8 @@ async def update_rank_settings_config_view(interaction: discord.Interaction, bot
     
     embed.add_field(name="現在の設定一覧", value=f"• **対応チャンネル (有効)**: {whitelist_ch_str}\n• **非対応チャンネル (無効)**: {blacklist_ch_str}", inline=False)
     
-    if interaction.is_expired() or interaction.response.is_done():
-        await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=view)
+    if interaction.response.is_done():
+        await interaction.edit_original_response(embed=embed, view=view)
     else:
         await interaction.response.edit_message(embed=embed, view=view)
 
@@ -3703,6 +3703,7 @@ class WhitelistChannelSelect(discord.ui.ChannelSelect):
         )
 
     async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
         bot = interaction.client
         cfg = bot.get_rank_config(interaction.guild_id)
         
@@ -3731,6 +3732,7 @@ class BlacklistChannelSelect(discord.ui.ChannelSelect):
         )
 
     async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
         bot = interaction.client
         cfg = bot.get_rank_config(interaction.guild_id)
         
@@ -3751,6 +3753,7 @@ class ClearWhitelistButton(discord.ui.Button):
         )
 
     async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
         bot = interaction.client
         cfg = bot.get_rank_config(interaction.guild_id)
         cfg["whitelist"] = set()
@@ -3768,6 +3771,7 @@ class ClearBlacklistButton(discord.ui.Button):
         )
 
     async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
         bot = interaction.client
         cfg = bot.get_rank_config(interaction.guild_id)
         cfg["blacklist"] = set()
@@ -3785,6 +3789,7 @@ class BackToAdminPanelButton(discord.ui.Button):
         )
 
     async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
         bot = interaction.client
         await update_main_admin_panel(interaction, bot)
 
@@ -3812,6 +3817,7 @@ class ManageRankSettingsButton(discord.ui.Button):
         if not has_admin_role(interaction.user) and not interaction.user.guild_permissions.administrator:
             return await interaction.response.send_message("この操作を実行する権限がありません（運営専用）。", ephemeral=True)
 
+        await interaction.response.defer()
         bot = interaction.client
         await update_rank_settings_config_view(interaction, bot)
 
@@ -3960,8 +3966,8 @@ async def update_main_admin_panel(interaction: discord.Interaction, bot):
     )
 
     view = PanelSetupView()
-    if interaction.is_expired() or interaction.response.is_done():
-        await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=view)
+    if interaction.response.is_done():
+        await interaction.edit_original_response(embed=embed, view=view)
     else:
         await interaction.response.edit_message(embed=embed, view=view)
 
@@ -3982,6 +3988,7 @@ class AdminGroup(app_commands.Group):
     @app_commands.command(name="パネル設置", description="【管理者専用】自分にしか見えないパネル設定画面を表示し、各種パネルを設置します")
     @is_admin()
     async def panel_setup(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         embed = discord.Embed(
             title="⚙️ サーバー設定・パネル設置",
             description="下のメニューから設置したいパネルを選択してください。現在の設定情報は以下の通りです。",
@@ -4126,7 +4133,7 @@ class AdminGroup(app_commands.Group):
 
         view = PanelSetupView()
 
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
     @app_commands.command(name="ランクリセット", description="ランクを初期化します")
     @is_admin()
