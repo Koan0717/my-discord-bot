@@ -124,7 +124,7 @@ class EconomyBot(commands.Bot):
             db_eval_settings = await database.get_all_evaluation_settings()
             for s in db_eval_settings:
                 self.evaluation_settings[s["guild_id"]] = {
-                    "forum_channel_id": s["forum_channel_id"],
+                    "forum_channel_ids": set(s["forum_channel_ids"]),
                     "self_intro_channel_ids": set(s["self_intro_channel_ids"])
                 }
         except Exception as e:
@@ -240,7 +240,7 @@ class EconomyBot(commands.Bot):
         if guild_id not in self.evaluation_settings:
             # Fallback to hardcoded globals if not configured in DB
             self.evaluation_settings[guild_id] = {
-                "forum_channel_id": EVALUATION_FORUM_CHANNEL_ID,
+                "forum_channel_ids": set([EVALUATION_FORUM_CHANNEL_ID]),
                 "self_intro_channel_ids": set(SELF_INTRO_CHANNEL_IDS)
             }
         return self.evaluation_settings[guild_id]
@@ -397,41 +397,42 @@ async def on_message(message):
     guild = message.guild
     if guild:
         cfg = bot.get_evaluation_config(guild.id)
-        if cfg["forum_channel_id"] and message.channel.id in cfg["self_intro_channel_ids"]:
+        if cfg["forum_channel_ids"] and message.channel.id in cfg["self_intro_channel_ids"]:
             human_role = discord.utils.get(message.guild.roles, name=NEW_MEMBER_ROLE_NAME)
             if human_role and human_role in message.author.roles:
-                forum_channel = bot.get_channel(cfg["forum_channel_id"])
-            if isinstance(forum_channel, discord.ForumChannel):
-                # 重複チェック: アクティブなスレッド名にユーザー名（アカウント名）が含まれているか
-                duplicate = any(message.author.name in thread.name for thread in forum_channel.threads)
-                
-                if not duplicate:
-                    period = await database.get_evaluation_period(user_id)
-                    if period:
-                        start_str = format_evaluation_datetime(period['start_time'])
-                        end_str = format_evaluation_datetime(period['end_time'])
-                        content = (
-                            f"**対象者:** {message.author.mention}\n"
-                            f"**評価期間:** {start_str} ～ {end_str}\n\n"
-                            f"**自己紹介へのリンク:**\n{message.jump_url}"
-                        )
-                    else:
-                        content = (
-                            f"**対象者:** {message.author.mention}\n"
-                            f"**評価期間:** データが見つかりませんでした。\n\n"
-                            f"**自己紹介へのリンク:**\n{message.jump_url}"
-                        )
+                for forum_id in cfg["forum_channel_ids"]:
+                    forum_channel = bot.get_channel(forum_id)
+                    if isinstance(forum_channel, discord.ForumChannel):
+                        # 重複チェック: アクティブなスレッド名にユーザー名（アカウント名）が含まれているか
+                        duplicate = any(message.author.name in thread.name for thread in forum_channel.threads)
                         
-                    thread_name = f"{message.author.display_name}_{message.author.name}"
-                    try:
-                        await forum_channel.create_thread(
-                            name=thread_name,
-                            content=content,
-                            reason=f"Auto created evaluation thread for {message.author.display_name}"
-                        )
-                        print(f"[Evaluation Thread] Created for {message.author.display_name}")
-                    except Exception as e:
-                        print(f"[ERROR] Failed to create forum thread: {e}")
+                        if not duplicate:
+                            period = await database.get_evaluation_period(user_id)
+                            if period:
+                                start_str = format_evaluation_datetime(period['start_time'])
+                                end_str = format_evaluation_datetime(period['end_time'])
+                                content = (
+                                    f"**対象者:** {message.author.mention}\n"
+                                    f"**評価期間:** {start_str} ～ {end_str}\n\n"
+                                    f"**自己紹介へのリンク:**\n{message.jump_url}"
+                                )
+                            else:
+                                content = (
+                                    f"**対象者:** {message.author.mention}\n"
+                                    f"**評価期間:** データが見つかりませんでした。\n\n"
+                                    f"**自己紹介へのリンク:**\n{message.jump_url}"
+                                )
+                                
+                            thread_name = f"{message.author.display_name}_{message.author.name}"
+                            try:
+                                await forum_channel.create_thread(
+                                    name=thread_name,
+                                    content=content,
+                                    reason=f"Auto created evaluation thread for {message.author.display_name}"
+                                )
+                                print(f"[Evaluation Thread] Created for {message.author.display_name} in forum {forum_id}")
+                            except Exception as e:
+                                print(f"[ERROR] Failed to create forum thread in forum {forum_id}: {e}")
 
     await bot.process_commands(message)
 
@@ -620,14 +621,14 @@ async def on_guild_channel_delete(channel):
     if channel.guild:
         cfg = bot.get_evaluation_config(channel.guild.id)
         changed = False
-        if cfg["forum_channel_id"] == channel.id:
-            cfg["forum_channel_id"] = None
+        if channel.id in cfg["forum_channel_ids"]:
+            cfg["forum_channel_ids"].discard(channel.id)
             changed = True
         if channel.id in cfg["self_intro_channel_ids"]:
             cfg["self_intro_channel_ids"].discard(channel.id)
             changed = True
         if changed:
-            await database.set_evaluation_settings(channel.guild.id, cfg["forum_channel_id"], list(cfg["self_intro_channel_ids"]))
+            await database.set_evaluation_settings(channel.guild.id, list(cfg["forum_channel_ids"]), list(cfg["self_intro_channel_ids"]))
 
 @bot.event
 async def on_member_update(before, after):
@@ -3419,15 +3420,22 @@ async def update_evaluation_settings_config_view(interaction: discord.Interactio
         description=(
             "自己紹介チャンネルと評価用フォーラムの設定を行います。\n\n"
             "**【設定方法】**\n"
-            "1. **評価用フォーラム**を選択すると、評価用スレッドがそのフォーラムに作成されるようになります。\n"
-            "2. **追加する自己紹介チャンネル**を選択すると、そのチャンネルでの発言検知（スレッド自動作成）の対象に追加されます。\n"
-            "3. **登録済みの自己紹介チャンネルを削除**するには、削除用ドロップダウンを使用してください。"
+            "1. **評価用フォーラムを追加**から、評価用スレッドを作成したいフォーラムを選択して追加します。\n"
+            "2. **削除する評価用フォーラムを選択**から、登録を解除できます。\n"
+            "3. **追加する自己紹介チャンネルを選択**から、発言検知（スレッド自動作成）の対象となるテキストチャンネルを追加します。\n"
+            "4. **削除する自己紹介チャンネルを選択**から、登録を解除できます。"
         ),
         color=discord.Color.blue()
     )
     
-    forum_ch = interaction.guild.get_channel(cfg["forum_channel_id"]) if cfg["forum_channel_id"] else None
-    forum_ch_str = forum_ch.mention if forum_ch else "未設定"
+    forum_strs = []
+    for fid in cfg["forum_channel_ids"]:
+        ch = interaction.guild.get_channel(fid)
+        if ch:
+            forum_strs.append(ch.mention)
+        else:
+            forum_strs.append(f"⚠️ 不明なチャンネル (ID: `{fid}`)")
+    forum_ch_str = ", ".join(forum_strs) if forum_strs else "登録されている評価用フォーラムはありません。"
     
     self_intro_strs = []
     for cid in cfg["self_intro_channel_ids"]:
@@ -3445,10 +3453,10 @@ async def update_evaluation_settings_config_view(interaction: discord.Interactio
     else:
         await interaction.response.edit_message(embed=embed, view=view)
 
-class SelectEvaluationForumSelect(discord.ui.ChannelSelect):
+class AddEvaluationForumSelect(discord.ui.ChannelSelect):
     def __init__(self):
         super().__init__(
-            placeholder="評価用フォーラムを選択...",
+            placeholder="評価用フォーラムを追加...",
             channel_types=[discord.ChannelType.forum],
             min_values=1,
             max_values=1,
@@ -3460,8 +3468,45 @@ class SelectEvaluationForumSelect(discord.ui.ChannelSelect):
         channel = self.values[0]
         cfg = bot.get_evaluation_config(interaction.guild_id)
         
-        cfg["forum_channel_id"] = channel.id
-        await database.set_evaluation_settings(interaction.guild_id, cfg["forum_channel_id"], list(cfg["self_intro_channel_ids"]))
+        if channel.id in cfg["forum_channel_ids"]:
+            return await interaction.response.send_message(f"❌ {channel.mention} は既に評価用フォーラムとして登録されています。", ephemeral=True)
+            
+        cfg["forum_channel_ids"].add(channel.id)
+        await database.set_evaluation_settings(interaction.guild_id, list(cfg["forum_channel_ids"]), list(cfg["self_intro_channel_ids"]))
+        
+        await update_evaluation_settings_config_view(interaction, bot)
+
+class RemoveEvaluationForumSelect(discord.ui.Select):
+    def __init__(self, bot, guild_id):
+        cfg = bot.get_evaluation_config(guild_id)
+        options = []
+        guild = bot.get_guild(guild_id)
+        for fid in cfg["forum_channel_ids"]:
+            ch = guild.get_channel(fid) if guild else None
+            name = ch.name if ch else f"不明なフォーラム ({fid})"
+            options.append(discord.SelectOption(
+                label=name,
+                value=str(fid),
+                description=f"ID: {fid}"
+            ))
+        super().__init__(
+            placeholder="削除する評価用フォーラムを選択...",
+            min_values=1,
+            max_values=1,
+            options=options[:25],
+            row=1
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        bot = interaction.client
+        channel_id = int(self.values[0])
+        cfg = bot.get_evaluation_config(interaction.guild_id)
+        
+        if channel_id not in cfg["forum_channel_ids"]:
+            return await interaction.response.send_message(f"❌ そのチャンネルは登録されていません。", ephemeral=True)
+            
+        cfg["forum_channel_ids"].discard(channel_id)
+        await database.set_evaluation_settings(interaction.guild_id, list(cfg["forum_channel_ids"]), list(cfg["self_intro_channel_ids"]))
         
         await update_evaluation_settings_config_view(interaction, bot)
 
@@ -3472,7 +3517,7 @@ class AddSelfIntroChannelSelect(discord.ui.ChannelSelect):
             channel_types=[discord.ChannelType.text],
             min_values=1,
             max_values=1,
-            row=1
+            row=2
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -3484,7 +3529,7 @@ class AddSelfIntroChannelSelect(discord.ui.ChannelSelect):
             return await interaction.response.send_message(f"❌ {channel.mention} は既に自己紹介チャンネルとして登録されています。", ephemeral=True)
             
         cfg["self_intro_channel_ids"].add(channel.id)
-        await database.set_evaluation_settings(interaction.guild_id, cfg["forum_channel_id"], list(cfg["self_intro_channel_ids"]))
+        await database.set_evaluation_settings(interaction.guild_id, list(cfg["forum_channel_ids"]), list(cfg["self_intro_channel_ids"]))
         
         await update_evaluation_settings_config_view(interaction, bot)
 
@@ -3506,7 +3551,7 @@ class RemoveSelfIntroChannelSelect(discord.ui.Select):
             min_values=1,
             max_values=1,
             options=options[:25],
-            row=2
+            row=3
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -3518,16 +3563,18 @@ class RemoveSelfIntroChannelSelect(discord.ui.Select):
             return await interaction.response.send_message(f"❌ そのチャンネルは登録されていません。", ephemeral=True)
             
         cfg["self_intro_channel_ids"].discard(channel_id)
-        await database.set_evaluation_settings(interaction.guild_id, cfg["forum_channel_id"], list(cfg["self_intro_channel_ids"]))
+        await database.set_evaluation_settings(interaction.guild_id, list(cfg["forum_channel_ids"]), list(cfg["self_intro_channel_ids"]))
         
         await update_evaluation_settings_config_view(interaction, bot)
 
 class EvaluationSettingsConfigView(discord.ui.View):
     def __init__(self, bot, guild_id):
         super().__init__(timeout=180)
-        self.add_item(SelectEvaluationForumSelect())
-        self.add_item(AddSelfIntroChannelSelect())
+        self.add_item(AddEvaluationForumSelect())
         cfg = bot.get_evaluation_config(guild_id)
+        if cfg["forum_channel_ids"]:
+            self.add_item(RemoveEvaluationForumSelect(bot, guild_id))
+        self.add_item(AddSelfIntroChannelSelect())
         if cfg["self_intro_channel_ids"]:
             self.add_item(RemoveSelfIntroChannelSelect(bot, guild_id))
 
@@ -3649,8 +3696,14 @@ class AdminGroup(app_commands.Group):
         
         # 自己紹介・評価設定
         cfg = interaction.client.get_evaluation_config(interaction.guild.id)
-        forum_ch = interaction.guild.get_channel(cfg["forum_channel_id"]) if cfg["forum_channel_id"] else None
-        forum_ch_str = forum_ch.mention if forum_ch else "未設定"
+        forum_strs = []
+        for fid in cfg["forum_channel_ids"]:
+            ch = interaction.guild.get_channel(fid)
+            if ch:
+                forum_strs.append(ch.mention)
+            else:
+                forum_strs.append(f"⚠️ 不明なチャンネル (ID: `{fid}`)")
+        forum_ch_str = ", ".join(forum_strs) if forum_strs else "未設定"
         
         self_intro_strs = []
         for cid in cfg["self_intro_channel_ids"]:
