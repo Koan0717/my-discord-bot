@@ -263,36 +263,59 @@ class EconomyBot(commands.Bot):
         return self.rank_settings[guild_id]
 
     def is_xp_enabled(self, channel) -> bool:
-        if not channel or not channel.guild:
+        try:
+            if not channel or not channel.guild:
+                return False
+            cfg = self.get_rank_config(channel.guild.id)
+            whitelist = cfg["whitelist"]
+            blacklist = cfg["blacklist"]
+            
+            # Resolve all relevant IDs to check
+            check_ids = {channel.id}
+            
+            # 1. Resolve parent channel (for threads/forums)
+            parent_channel = None
+            if hasattr(channel, "parent") and channel.parent:
+                parent_channel = channel.parent
+            elif hasattr(channel, "parent_id") and channel.parent_id:
+                parent_channel = channel.guild.get_channel(channel.parent_id)
+                
+            if parent_channel:
+                check_ids.add(parent_channel.id)
+                
+            # 2. Resolve category ID of the channel
+            if hasattr(channel, "category_id") and channel.category_id:
+                check_ids.add(channel.category_id)
+            elif hasattr(channel, "category") and channel.category:
+                if hasattr(channel.category, "id"):
+                    check_ids.add(channel.category.id)
+                    
+            # 3. Resolve category ID of the parent channel (e.g., parent text channel of a thread)
+            if parent_channel:
+                if hasattr(parent_channel, "category_id") and parent_channel.category_id:
+                    check_ids.add(parent_channel.category_id)
+                elif hasattr(parent_channel, "category") and parent_channel.category:
+                    if hasattr(parent_channel.category, "id"):
+                        check_ids.add(parent_channel.category.id)
+                        
+            is_in_whitelist = not check_ids.isdisjoint(whitelist)
+            is_in_blacklist = not check_ids.isdisjoint(blacklist)
+            
+            print(f"[DEBUG] is_xp_enabled: channel={getattr(channel, 'name', str(channel.id))}, check_ids={check_ids}, whitelist={whitelist}, blacklist={blacklist}")
+            
+            if not whitelist: # 有効なチャンネルの選択がなかった場合
+                # 無効にしたチャンネル以外を対象とする
+                return not is_in_blacklist
+            else: # 有効なチャンネルの選択があった場合
+                if not blacklist: # 無効なチャンネルの選択がなかった場合
+                    # 有効にしたチャンネルだけを対象とする
+                    return is_in_whitelist
+                else: # 両方設定されている場合
+                    # 有効なチャンネルに入っており、かつ無効なチャンネルに入っていない
+                    return is_in_whitelist and not is_in_blacklist
+        except Exception as e:
+            print(f"[ERROR] is_xp_enabled error: {e}")
             return False
-        cfg = self.get_rank_config(channel.guild.id)
-        whitelist = cfg["whitelist"]
-        blacklist = cfg["blacklist"]
-        
-        check_ids = {channel.id}
-        if hasattr(channel, "parent_id") and channel.parent_id:
-            check_ids.add(channel.parent_id)
-        elif hasattr(channel, "parent") and channel.parent:
-            check_ids.add(channel.parent.id)
-            
-        if hasattr(channel, "category_id") and channel.category_id:
-            check_ids.add(channel.category_id)
-        elif hasattr(channel, "category") and channel.category:
-            check_ids.add(channel.category.id)
-            
-        is_in_whitelist = not check_ids.isdisjoint(whitelist)
-        is_in_blacklist = not check_ids.isdisjoint(blacklist)
-        
-        if not whitelist: # 有効なチャンネルの選択がなかった場合
-            # 無効にしたチャンネル以外を対象とする
-            return not is_in_blacklist
-        else: # 有効なチャンネルの選択があった場合
-            if not blacklist: # 無効なチャンネルの選択がなかった場合
-                # 有効にしたチャンネルだけを対象とする
-                return is_in_whitelist
-            else: # 両方設定されている場合
-                # 有効なチャンネルに入っており、かつ無効なチャンネルに入っていない
-                return is_in_whitelist and not is_in_blacklist
 
 bot = EconomyBot()
 
