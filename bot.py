@@ -3863,21 +3863,31 @@ async def update_rank_settings_config_view(interaction: discord.Interaction, bot
             blacklist_strs.append(f"⚠️ 不明なチャンネル (ID: `{cid}`)")
     blacklist_ch_str = ", ".join(blacklist_strs) if blacklist_strs else "未設定 (制限なし)"
 
-    category_strs = []
-    for cid in cfg.get("categories", set()):
-        ch = interaction.guild.get_channel(cid)
-        if ch:
-            category_strs.append(ch.mention)
+    wl_cat_strs = []
+    for cid in cfg.get("whitelist_categories", set()):
+        cat = interaction.guild.get_channel(cid)
+        if cat:
+            wl_cat_strs.append(f"📁 {cat.name}")
         else:
-            category_strs.append(f"⚠️ 不明なカテゴリー (ID: `{cid}`)")
-    category_ch_str = ", ".join(category_strs) if category_strs else "未設定"
+            wl_cat_strs.append(f"⚠️ 不明なカテゴリー (ID: `{cid}`)") 
+    wl_cat_str = ", ".join(wl_cat_strs) if wl_cat_strs else "未設定"
+
+    bl_cat_strs = []
+    for cid in cfg.get("blacklist_categories", set()):
+        cat = interaction.guild.get_channel(cid)
+        if cat:
+            bl_cat_strs.append(f"📁 {cat.name}")
+        else:
+            bl_cat_strs.append(f"⚠️ 不明なカテゴリー (ID: `{cid}`)")
+    bl_cat_str = ", ".join(bl_cat_strs) if bl_cat_strs else "未設定"
 
     embed.add_field(
         name="現在の設定",
         value=(
             f"• **対応チャンネル (有効)**: {whitelist_ch_str}\n"
             f"• **非対応チャンネル (無効)**: {blacklist_ch_str}\n"
-            f"• **評価対象カテゴリー**: {category_ch_str}"
+            f"• **対応カテゴリー (有効)**: {wl_cat_str}\n"
+            f"• **非対応カテゴリー (無効)**: {bl_cat_str}"
         ),
         inline=False
     )
@@ -3908,7 +3918,11 @@ class WhitelistChannelSelect(discord.ui.ChannelSelect):
         bot = interaction.client
         cfg = bot.get_rank_config(interaction.guild_id)
         cfg["whitelist"] = {ch.id for ch in self.values}
-        await database.set_rank_settings(interaction.guild_id, list(cfg["whitelist"]), list(cfg["blacklist"]), list(cfg.get("categories", [])))
+        await database.set_rank_settings(
+            interaction.guild_id,
+            list(cfg["whitelist"]), list(cfg["blacklist"]),
+            list(cfg.get("whitelist_categories", [])), list(cfg.get("blacklist_categories", []))
+        )
         await update_rank_settings_config_view(interaction, bot)
 
 class BlacklistChannelSelect(discord.ui.ChannelSelect):
@@ -3932,13 +3946,18 @@ class BlacklistChannelSelect(discord.ui.ChannelSelect):
         bot = interaction.client
         cfg = bot.get_rank_config(interaction.guild_id)
         cfg["blacklist"] = {ch.id for ch in self.values}
-        await database.set_rank_settings(interaction.guild_id, list(cfg["whitelist"]), list(cfg["blacklist"]), list(cfg.get("categories", [])))
+        await database.set_rank_settings(
+            interaction.guild_id,
+            list(cfg["whitelist"]), list(cfg["blacklist"]),
+            list(cfg.get("whitelist_categories", [])), list(cfg.get("blacklist_categories", []))
+        )
         await update_rank_settings_config_view(interaction, bot)
 
-class RankCategorySelect(discord.ui.ChannelSelect):
+class WhitelistCategorySelect(discord.ui.ChannelSelect):
+    """XP対象カテゴリー（有効）選択"""
     def __init__(self, bot, guild_id):
         super().__init__(
-            placeholder="評価対象カテゴリーを選択/変更...",
+            placeholder="対応カテゴリー (有効) を選択/変更...",
             channel_types=[discord.ChannelType.category],
             min_values=1,
             max_values=25,
@@ -3949,48 +3968,42 @@ class RankCategorySelect(discord.ui.ChannelSelect):
         await interaction.response.defer()
         bot = interaction.client
         cfg = bot.get_rank_config(interaction.guild_id)
-        cfg["categories"] = {ch.id for ch in self.values}
-        await database.set_rank_settings(interaction.guild_id, list(cfg["whitelist"]), list(cfg["blacklist"]), list(cfg["categories"]))
+        cfg["whitelist_categories"] = {ch.id for ch in self.values}
+        cfg["categories"] = cfg["whitelist_categories"]  # legacy互換
+        await database.set_rank_settings(
+            interaction.guild_id,
+            list(cfg["whitelist"]), list(cfg["blacklist"]),
+            list(cfg["whitelist_categories"]), list(cfg.get("blacklist_categories", []))
+        )
+        await update_rank_settings_config_view(interaction, bot)
+
+class BlacklistCategorySelect(discord.ui.ChannelSelect):
+    """XP非対象カテゴリー（無効）選択"""
+    def __init__(self, bot, guild_id):
+        super().__init__(
+            placeholder="非対応カテゴリー (無効) を選択/変更...",
+            channel_types=[discord.ChannelType.category],
+            min_values=1,
+            max_values=25,
+            row=3
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        bot = interaction.client
+        cfg = bot.get_rank_config(interaction.guild_id)
+        cfg["blacklist_categories"] = {ch.id for ch in self.values}
+        await database.set_rank_settings(
+            interaction.guild_id,
+            list(cfg["whitelist"]), list(cfg["blacklist"]),
+            list(cfg.get("whitelist_categories", [])), list(cfg["blacklist_categories"])
+        )
         await update_rank_settings_config_view(interaction, bot)
 
 class ClearWhitelistButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
-            label="対応リストをクリア",
-            style=discord.ButtonStyle.danger,
-            emoji="🧹",
-            row=3
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        bot = interaction.client
-        cfg = bot.get_rank_config(interaction.guild_id)
-        cfg["whitelist"] = set()
-        await database.set_rank_settings(interaction.guild_id, list(cfg["whitelist"]), list(cfg["blacklist"]), list(cfg["categories"]))
-        await update_rank_settings_config_view(interaction, bot)
-
-class ClearBlacklistButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(
-            label="非対応リストをクリア",
-            style=discord.ButtonStyle.danger,
-            emoji="🧹",
-            row=3
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        bot = interaction.client
-        cfg = bot.get_rank_config(interaction.guild_id)
-        cfg["blacklist"] = set()
-        await database.set_rank_settings(interaction.guild_id, list(cfg["whitelist"]), list(cfg["blacklist"]), list(cfg["categories"]))
-        await update_rank_settings_config_view(interaction, bot)
-
-class ClearCategoriesButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(
-            label="カテゴリーをクリア",
+            label="対応CHをクリア",
             style=discord.ButtonStyle.danger,
             emoji="🧹",
             row=4
@@ -4000,8 +4013,76 @@ class ClearCategoriesButton(discord.ui.Button):
         await interaction.response.defer()
         bot = interaction.client
         cfg = bot.get_rank_config(interaction.guild_id)
+        cfg["whitelist"] = set()
+        await database.set_rank_settings(
+            interaction.guild_id,
+            list(cfg["whitelist"]), list(cfg["blacklist"]),
+            list(cfg.get("whitelist_categories", [])), list(cfg.get("blacklist_categories", []))
+        )
+        await update_rank_settings_config_view(interaction, bot)
+
+class ClearBlacklistButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="非対応CHをクリア",
+            style=discord.ButtonStyle.danger,
+            emoji="🧹",
+            row=4
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        bot = interaction.client
+        cfg = bot.get_rank_config(interaction.guild_id)
+        cfg["blacklist"] = set()
+        await database.set_rank_settings(
+            interaction.guild_id,
+            list(cfg["whitelist"]), list(cfg["blacklist"]),
+            list(cfg.get("whitelist_categories", [])), list(cfg.get("blacklist_categories", []))
+        )
+        await update_rank_settings_config_view(interaction, bot)
+
+class ClearWlCategoriesButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="対応CATをクリア",
+            style=discord.ButtonStyle.danger,
+            emoji="🧹",
+            row=4
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        bot = interaction.client
+        cfg = bot.get_rank_config(interaction.guild_id)
+        cfg["whitelist_categories"] = set()
         cfg["categories"] = set()
-        await database.set_rank_settings(interaction.guild_id, list(cfg["whitelist"]), list(cfg["blacklist"]), list(cfg["categories"]))
+        await database.set_rank_settings(
+            interaction.guild_id,
+            list(cfg["whitelist"]), list(cfg["blacklist"]),
+            list(cfg["whitelist_categories"]), list(cfg.get("blacklist_categories", []))
+        )
+        await update_rank_settings_config_view(interaction, bot)
+
+class ClearBlCategoriesButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="非対応CATをクリア",
+            style=discord.ButtonStyle.danger,
+            emoji="🧹",
+            row=4
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        bot = interaction.client
+        cfg = bot.get_rank_config(interaction.guild_id)
+        cfg["blacklist_categories"] = set()
+        await database.set_rank_settings(
+            interaction.guild_id,
+            list(cfg["whitelist"]), list(cfg["blacklist"]),
+            list(cfg.get("whitelist_categories", [])), list(cfg["blacklist_categories"])
+        )
         await update_rank_settings_config_view(interaction, bot)
 
 class BackToAdminPanelButton(discord.ui.Button):
@@ -4036,12 +4117,19 @@ class ManageRankSettingsButton(discord.ui.Button):
 class RankSettingsConfigView(discord.ui.View):
     def __init__(self, bot, guild_id):
         super().__init__(timeout=180)
+        # row=0: 対応チャンネル（有効）
         self.add_item(WhitelistChannelSelect(bot, guild_id))
+        # row=1: 非対応チャンネル（無効）
         self.add_item(BlacklistChannelSelect(bot, guild_id))
-        self.add_item(RankCategorySelect(bot, guild_id))
+        # row=2: 対応カテゴリー（有効）
+        self.add_item(WhitelistCategorySelect(bot, guild_id))
+        # row=3: 非対応カテゴリー（無効）
+        self.add_item(BlacklistCategorySelect(bot, guild_id))
+        # row=4: クリアボタン群 + 戻るボタン
         self.add_item(ClearWhitelistButton())
         self.add_item(ClearBlacklistButton())
-        self.add_item(ClearCategoriesButton())
+        self.add_item(ClearWlCategoriesButton())
+        self.add_item(ClearBlCategoriesButton())
         self.add_item(BackToAdminPanelButton(row=4))
 
 
@@ -4176,21 +4264,25 @@ async def update_main_admin_panel(interaction: discord.Interaction, bot):
             blacklist_strs.append(f"⚠️ 不明なチャンネル (ID: `{cid}`)")
     blacklist_ch_str = ", ".join(blacklist_strs) if blacklist_strs else "未設定 (制限なし)"
 
-    category_strs = []
-    for cid in rank_cfg["categories"]:
-        ch = interaction.guild.get_channel(cid)
-        if ch:
-            category_strs.append(ch.mention)
-        else:
-            category_strs.append(f"⚠️ 不明なカテゴリー (ID: `{cid}`)")
-    category_ch_str = ", ".join(category_strs) if category_strs else "未設定"
+    wl_cat_strs = []
+    for cid in rank_cfg.get("whitelist_categories", set()):
+        cat = interaction.guild.get_channel(cid)
+        wl_cat_strs.append(f"📁 {cat.name}" if cat else f"⚠️ 不明 (ID: `{cid}`)")
+    wl_cat_str = ", ".join(wl_cat_strs) if wl_cat_strs else "未設定"
+
+    bl_cat_strs = []
+    for cid in rank_cfg.get("blacklist_categories", set()):
+        cat = interaction.guild.get_channel(cid)
+        bl_cat_strs.append(f"📁 {cat.name}" if cat else f"⚠️ 不明 (ID: `{cid}`)")
+    bl_cat_str = ", ".join(bl_cat_strs) if bl_cat_strs else "未設定"
 
     embed.add_field(
         name="📊 ランク設定 (TC/VC XP対象)",
         value=(
             f"• **対応チャンネル (有効)**: {whitelist_ch_str}\n"
             f"• **非対応チャンネル (無効)**: {blacklist_ch_str}\n"
-            f"• **評価対象カテゴリー**: {category_ch_str}"
+            f"• **対応カテゴリー (有効)**: {wl_cat_str}\n"
+            f"• **非対応カテゴリー (無効)**: {bl_cat_str}"
         ),
         inline=False
     )
