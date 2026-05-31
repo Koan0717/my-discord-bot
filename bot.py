@@ -4399,11 +4399,33 @@ async def update_main_admin_panel(interaction: discord.Interaction, bot):
         inline=False
     )
 
+    main_sub_roles_str = format_setting_status(interaction.guild, 'MAIN_SUB_MEMBER_ROLE_IDS')
+    if "❌" in main_sub_roles_str: main_sub_roles_str = "名前一致: " + ", ".join(MAIN_SUB_MEMBER_ROLE_NAMES)
+    
+    admin_str = format_setting_status(interaction.guild, 'ADMIN_ROLE_IDS')
+    if "❌" in admin_str: admin_str = "名前一致: " + ", ".join(ADMIN_ROLE_NAMES)
+    evaluator_str = format_setting_status(interaction.guild, 'EVALUATOR_ROLE_IDS')
+    if "❌" in evaluator_str: evaluator_str = "名前一致: " + ", ".join(EVALUATOR_ROLE_NAMES)
+    new_member_str = format_setting_status(interaction.guild, 'NEW_MEMBER_ROLE_ID')
+    if "❌" in new_member_str: new_member_str = "名前一致: " + NEW_MEMBER_ROLE_NAME
+    pending_member_str = format_setting_status(interaction.guild, 'PENDING_MEMBER_ROLE_ID')
+    if "❌" in pending_member_str: pending_member_str = "名前一致: " + PENDING_MEMBER_ROLE_NAME
+    interviewer_str = format_setting_status(interaction.guild, 'INTERVIEWER_ROLE_IDS')
+    if "❌" in interviewer_str: interviewer_str = "名前一致: " + ", ".join(INTERVIEWER_ROLE_NAMES)
+    emblem_manager_str = format_setting_status(interaction.guild, 'EMBLEM_MANAGER_ROLE_ID')
+    if "❌" in emblem_manager_str: emblem_manager_str = "名前一致: " + EMBLEM_MANAGER_ROLE_NAME
+    emblem_master_str = format_setting_status(interaction.guild, 'EMBLEM_MASTER_ROLE_ID')
+    if "❌" in emblem_master_str: emblem_master_str = "名前一致: " + EMBLEM_MASTER_ROLE_NAME
+    confession_priest_str = format_setting_status(interaction.guild, 'CONFESSION_PRIEST_ROLE_ID')
+    if "❌" in confession_priest_str: confession_priest_str = "名前一致: " + CONFESSION_PRIEST_ROLE_NAME
+    priest_str = format_setting_status(interaction.guild, 'PRIEST_ROLE_ID')
+    if "❌" in priest_str: priest_str = "名前一致: " + PRIEST_ROLE_NAME
+
     # 宿・カスタムVC
     embed.add_field(
         name="🏨 部屋・宿設定",
         value=(
-            f"🛖 **一般宿** (無料ロール: {', '.join(MAIN_SUB_MEMBER_ROLE_NAMES)}):\n"
+            f"🛖 **一般宿** (対象: {main_sub_roles_str}):\n"
             f"  ┗ 12時間: {ROOM_SETTINGS['宿'][12]['price']:,} {CURRENCY_NAME}\n"
             f"  ┗ 24時間: {ROOM_SETTINGS['宿'][24]['price']:,} {CURRENCY_NAME}\n"
             f"🏰 **高級宿**:\n"
@@ -4419,9 +4441,11 @@ async def update_main_admin_panel(interaction: discord.Interaction, bot):
     embed.add_field(
         name="👥 ロール設定",
         value=(
-            f"入界後ロール: **{NEW_MEMBER_ROLE_NAME}**\n"
-            f"待機者ロール: **{PENDING_MEMBER_ROLE_NAME}**\n"
-            f"面接官ロール: **{', '.join(INTERVIEWER_ROLE_NAMES)}**"
+            f"管理者ロール: {admin_str}\n"
+            f"評価員ロール: {evaluator_str}\n"
+            f"入界後ロール: {new_member_str}\n"
+            f"待機者ロール: {pending_member_str}\n"
+            f"面接官ロール: {interviewer_str}"
         ),
         inline=False
     )
@@ -4430,8 +4454,8 @@ async def update_main_admin_panel(interaction: discord.Interaction, bot):
     embed.add_field(
         name="🎨 制作・告解設定",
         value=(
-            f"紋章師ロール: **{EMBLEM_MANAGER_ROLE_NAME}**, **{EMBLEM_MASTER_ROLE_NAME}**\n"
-            f"司祭ロール: **{CONFESSION_PRIEST_ROLE_NAME}**, **{PRIEST_ROLE_NAME}**"
+            f"紋章師: {emblem_manager_str}, {emblem_master_str}\n"
+            f"司祭: {confession_priest_str}, {priest_str}"
         ),
         inline=False
     )
