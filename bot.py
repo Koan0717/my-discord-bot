@@ -350,6 +350,22 @@ class EconomyBot(commands.Bot):
         self.check_expired_rooms.start()
         self.vc_reward_loop.start()
 
+        # Render Health Check用 Webサーバー (aiohttp版)
+        try:
+            from aiohttp import web
+            async def handle_ping(request):
+                return web.Response(text="Bot is alive!")
+            app = web.Application()
+            app.add_routes([web.get('/', handle_ping)])
+            runner = web.AppRunner(app)
+            await runner.setup()
+            port = int(os.environ.get("PORT", 8080))
+            site = web.TCPSite(runner, '0.0.0.0', port)
+            await site.start()
+            print(f"✅ Web server started on port {port} (Render Health Check)", flush=True)
+        except Exception as web_e:
+            print(f"[ERROR] Failed to start web server: {web_e}", flush=True)
+
         print(f"✅ Bot is ready! Logged in as {self.user} (ID: {self.user.id})")
         print("✅ Slash commands and persistent views are synced.")
 
@@ -4899,8 +4915,6 @@ class EvaluationGroup(app_commands.Group):
 
 # --- 実行 ---
 if __name__ == "__main__":
-    import keep_alive
-    keep_alive.keep_alive()
     if TOKEN:
         discord.utils.setup_logging()
         bot.run(TOKEN)
