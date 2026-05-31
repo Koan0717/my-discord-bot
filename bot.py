@@ -349,6 +349,7 @@ class EconomyBot(commands.Bot):
         await self.tree.sync()
         self.check_expired_rooms.start()
         self.vc_reward_loop.start()
+
         print(f"✅ Bot is ready! Logged in as {self.user} (ID: {self.user.id})")
         print("✅ Slash commands and persistent views are synced.")
 
