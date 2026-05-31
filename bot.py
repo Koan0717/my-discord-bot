@@ -43,7 +43,7 @@ CREATE_VC_CHANNEL_ID = 123456789012345678
 NEW_MEMBER_ROLE_NAME = "【仮】新規メンバーロール名"
 PENDING_MEMBER_ROLE_NAME = "【仮】入界待機者ロール名"
 INTERVIEWER_ROLE_NAMES = ["【仮】面接官ロール名A", "【仮】面接官ロール名B"]
-FREE_INN_ROLE_NAMES = ["【仮】無料宿ロール名A", "【仮】無料宿ロール名B"]
+MAIN_SUB_MEMBER_ROLE_NAMES = ["【仮】本・準メンバーロール名A", "【仮】本・準メンバーロール名B"]
 EMBLEM_MANAGER_ROLE_NAME = "【仮】スタンプ統括ロール名"
 EMBLEM_MASTER_ROLE_NAME = "【仮】スタンプ制作ロール名"
 CONFESSION_PRIEST_ROLE_NAME = "【仮】告解司祭ロール名"
@@ -70,7 +70,7 @@ DEFAULT_SETTINGS = {
     "NEW_MEMBER_ROLE_ID": 123456789012345678,
     "PENDING_MEMBER_ROLE_ID": 123456789012345678,
     "INTERVIEWER_ROLE_IDS": [],
-    "FREE_INN_ROLE_IDS": [],
+    "MAIN_SUB_MEMBER_ROLE_IDS": [],
     "EMBLEM_MANAGER_ROLE_ID": 123456789012345678,
     "EMBLEM_MASTER_ROLE_ID": 123456789012345678,
     "CONFESSION_PRIEST_ROLE_ID": 123456789012345678,
@@ -133,13 +133,13 @@ def has_interviewer_role(user: discord.Member):
         return True
     return False
 
-def is_free_inn_member(user: discord.Member):
-    free_inn_role_ids = get_setting("FREE_INN_ROLE_IDS")
+def is_main_or_sub_member(user: discord.Member):
+    main_sub_role_ids = get_setting("MAIN_SUB_MEMBER_ROLE_IDS")
     user_role_ids = [r.id for r in user.roles]
-    if any(rid in free_inn_role_ids for rid in user_role_ids):
+    if any(rid in main_sub_role_ids for rid in user_role_ids):
         return True
     user_role_names = [r.name for r in user.roles]
-    if any(name in FREE_INN_ROLE_NAMES for name in user_role_names):
+    if any(name in MAIN_SUB_MEMBER_ROLE_NAMES for name in user_role_names):
         return True
     return False
 
@@ -1138,11 +1138,11 @@ async def process_room_extension(interaction: discord.Interaction, room_type: st
     if not room_data:
         return await interaction.edit_original_response(content="この部屋のデータが見つかりません。", view=None)
         
+    if room_data.get("expire_at") is None:
+        return await interaction.edit_original_response(content="この部屋は無制限のため延長の必要はありません。", view=None)
+        
     if interaction.user.id != room_data["owner_id"] and not interaction.user.guild_permissions.administrator:
         return await interaction.edit_original_response(content="延長は作成者または管理者のみ可能です。", view=None)
-        
-    if room_type == "宿" and is_free_inn_member(interaction.user):
-        price = 0
 
     if await database.get_balance(interaction.user.id) < price:
         return await interaction.edit_original_response(content=f"残高が不足しています！(必要: {price} {CURRENCY_NAME})", view=None)
@@ -1164,12 +1164,15 @@ async def handle_extend(interaction: discord.Interaction):
     if not room_data:
         await interaction.response.send_message("この部屋のデータが見つかりません。", ephemeral=True)
         return
+    if room_data.get("expire_at") is None:
+        await interaction.response.send_message("この部屋は無制限のため延長の必要はありません。", ephemeral=True)
+        return
     if interaction.user.id != room_data["owner_id"] and not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("延長は作成者または管理者のみ可能です。", ephemeral=True)
         return
         
     room_type = room_data["room_type"]
-    is_free_inn = room_type == "宿" and is_free_inn_member(interaction.user)
+    is_free_inn = room_type == "宿" and is_main_or_sub_member(interaction.user)
     
     if room_type == "宿":
         view = ExtendInnSelectView(is_free_inn)
@@ -2076,14 +2079,13 @@ async def process_room_purchase(interaction: discord.Interaction, room_type: str
     if room_type == "カスタムVC" and await database.has_room_type(owner_id, ["カスタムVC"]):
         return await interaction.edit_original_response(content="既に「カスタムVC」を持っています！")
     
-    settings = ROOM_SETTINGS[room_type][duration]
-    price = settings["price"]
-    
-    # 無料対象ロールによる無料化
-    if room_type == "宿" and is_free_inn_member(interaction.user):
+    if duration == 0:
         price = 0
+    else:
+        settings = ROOM_SETTINGS[room_type][duration]
+        price = settings["price"]
 
-    if await database.get_balance(owner_id) < price:
+    if price > 0 and await database.get_balance(owner_id) < price:
         return await interaction.edit_original_response(content="残高が不足しています。")
     
     if price == 0 or await database.remove_balance(owner_id, price):
@@ -2099,27 +2101,33 @@ async def process_room_purchase(interaction: discord.Interaction, room_type: str
                     interaction.user: discord.PermissionOverwrite(manage_channels=True, move_members=True)
                 }
             channel = await interaction.guild.create_voice_channel(name=f"{room_type}-{interaction.user.display_name}", category=interaction.channel.category, overwrites=overwrites, user_limit=(2 if room_type=="宿" else 0))
-            expire_at = database.get_now_naive() + datetime.timedelta(hours=duration)
+            
+            if duration == 0:
+                expire_at = None
+                dur_str = "無制限"
+                end_str = "無制限"
+            else:
+                expire_at = database.get_now_naive() + datetime.timedelta(hours=duration)
+                dur_str = f"{duration}時間"
+                end_str = f"<t:{int(expire_at.timestamp())}:F>"
+                
             await database.add_room(channel.id, owner_id, room_type, expire_at)
             await interaction.edit_original_response(content=f"✅ {channel.mention} を作成しました！", view=None)
             view = CustomRoomControlView() if room_type=="カスタムVC" else (RoomControlView() if room_type=="高級宿" else InnControlView())
-            embed = discord.Embed(title=f"🏠 {room_type}", description=f"作成者: {interaction.user.mention}\n利用期間: {duration}時間\n終了予定: <t:{int(expire_at.timestamp())}:F>", color=discord.Color.blue())
+            embed = discord.Embed(title=f"🏠 {room_type}", description=f"作成者: {interaction.user.mention}\n利用期間: {dur_str}\n終了予定: {end_str}", color=discord.Color.blue())
             await channel.send(content=f"{interaction.user.mention}", embed=embed, view=view)
         except Exception as e:
             if price > 0:
                 await database.add_balance(owner_id, price)
             await interaction.edit_original_response(content=f"エラー: {e}")
 
-class InnDurationSelectView(discord.ui.View):
-    def __init__(self, is_free: bool):
+class TempInnDurationSelectView(discord.ui.View):
+    def __init__(self):
         super().__init__(timeout=60)
         p12 = ROOM_SETTINGS["宿"][12]["price"]
         p24 = ROOM_SETTINGS["宿"][24]["price"]
         self.twelve_hours.label = f"12時間 ({p12:,} {CURRENCY_NAME})"
         self.twenty_four_hours.label = f"24時間 ({p24:,} {CURRENCY_NAME})"
-        if is_free:
-            self.twelve_hours.label = "12時間 (無料)"
-            self.twenty_four_hours.label = "24時間 (無料)"
 
     @discord.ui.button(label="12時間", style=discord.ButtonStyle.success, emoji="🛖")
     async def twelve_hours(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -2167,18 +2175,37 @@ class CustomRoomConfirmView(discord.ui.View):
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(content="キャンセルしました。", view=None)
 
-class RoomView(discord.ui.View):
-    def __init__(self): super().__init__(timeout=None)
-    @discord.ui.button(label="宿", style=discord.ButtonStyle.primary, emoji="🛖", custom_id="persistent_inn_btn")
-    async def inn(self, it, btn):
-        is_free = is_free_inn_member(it.user)
-        if is_free:
-            msg = "「一般宿」を作成しますか？\nあなたは対象ロールのため **無料** で作成可能です。"
-        else:
-            msg = "「一般宿」の利用期間を選択してください。"
-        await it.response.send_message(msg, view=InnDurationSelectView(is_free), ephemeral=True)
+class MainInnConfirmView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
 
-    @discord.ui.button(label="高級宿", style=discord.ButtonStyle.primary, emoji="🏰", custom_id="persistent_luxury_inn_btn")
+    @discord.ui.button(label="作成する", style=discord.ButtonStyle.success, emoji="✅")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await process_room_purchase(interaction, "宿", 0)
+
+    @discord.ui.button(label="キャンセル", style=discord.ButtonStyle.secondary, emoji="✖")
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="キャンセルしました。", view=None)
+
+class MainInnPanelView(discord.ui.View):
+    def __init__(self): super().__init__(timeout=None)
+    @discord.ui.button(label="一般宿を作成 (無料・無制限)", style=discord.ButtonStyle.primary, emoji="🛖", custom_id="persistent_inn_main_btn")
+    async def inn_main(self, it, btn):
+        if not is_main_or_sub_member(it.user):
+            return await it.response.send_message("このパネルは対象ロール(本・準メンバー)をお持ちの方のみ利用可能です。仮メンバーの方は有料の一般宿をご利用ください。", ephemeral=True)
+        await it.response.send_message("「一般宿」を無料・時間無制限で作成しますか？", view=MainInnConfirmView(), ephemeral=True)
+
+class TempInnPanelView(discord.ui.View):
+    def __init__(self): super().__init__(timeout=None)
+    @discord.ui.button(label="一般宿を作成 (有料)", style=discord.ButtonStyle.primary, emoji="🛖", custom_id="persistent_inn_temp_btn")
+    async def inn_temp(self, it, btn):
+        if is_main_or_sub_member(it.user):
+            return await it.response.send_message("あなたは対象ロール(本・準メンバー)をお持ちのため、専用の無料パネルをご利用ください。", ephemeral=True)
+        await it.response.send_message("「一般宿」の利用期間を選択してください。", view=TempInnDurationSelectView(), ephemeral=True)
+
+class LuxuryInnPanelView(discord.ui.View):
+    def __init__(self): super().__init__(timeout=None)
+    @discord.ui.button(label="高級宿を作成", style=discord.ButtonStyle.primary, emoji="🏰", custom_id="persistent_luxury_inn_panel_btn")
     async def luxury(self, it, btn):
         await it.response.send_message("「高級宿」の利用期間を選択してください。", view=LuxuryInnDurationSelectView(), ephemeral=True)
 
@@ -2788,7 +2815,9 @@ class PanelSelect(discord.ui.Select):
             discord.SelectOption(label="スロット", description="スロットゲームのパネルを設置します", emoji="🎰", value="slot"),
             discord.SelectOption(label="ブラックジャック", description="ブラックジャックゲームのパネルを設置します", emoji="🃏", value="blackjack"),
             discord.SelectOption(label="ルーレット", description="ルーレットゲームのパネルを設置します", emoji="🎡", value="roulette"),
-            discord.SelectOption(label="宿屋", description="宿・高級宿の購入パネルを設置します", emoji="🛖", value="inn"),
+            discord.SelectOption(label="一般宿 (本・準メンバー用)", description="本・準メンバー用の無料宿パネルを設置します", emoji="🛖", value="inn_main"),
+            discord.SelectOption(label="一般宿 (仮メンバー用)", description="仮メンバー用の有料宿パネルを設置します", emoji="🛖", value="inn_temp"),
+            discord.SelectOption(label="高級宿", description="高級宿の購入パネルを設置します", emoji="🏰", value="inn_luxury"),
             discord.SelectOption(label="カスタムVC", description="カスタムVCの作成パネルを設置します", emoji="✨", value="custom_vc"),
             discord.SelectOption(label="スタンプ依頼", description="スタンプ制作依頼のパネルを設置します", emoji="🎨", value="stamp"),
             discord.SelectOption(label="告解・相談室", description="告解・相談依頼のパネルを設置します", emoji="⛪", value="confession"),
@@ -2874,14 +2903,30 @@ class PanelSelect(discord.ui.Select):
             )
             await channel.send(embed=embed, view=RouletteView())
             await interaction.response.send_message("✅ ルーレットパネルを設置しました。", ephemeral=True)
-        elif val == "inn":
+        elif val == "inn_main":
             embed = discord.Embed(
-                title="🏠 宿屋", 
-                description=f"部屋を借りる\n※ロール「{'」や「'.join(FREE_INN_ROLE_NAMES)}」をお持ちの方は「宿」が無料になります。", 
+                title="🏠 一般宿 (本・準メンバー用)", 
+                description=f"部屋を無料で借りる（時間無制限）\n※対象ロール「{'」や「'.join(MAIN_SUB_MEMBER_ROLE_NAMES)}」をお持ちの方専用", 
                 color=discord.Color.gold()
             )
-            await channel.send(embed=embed, view=RoomView())
-            await interaction.response.send_message("✅ 宿屋パネルを設置しました。", ephemeral=True)
+            await channel.send(embed=embed, view=MainInnPanelView())
+            await interaction.response.send_message("✅ 宿屋(本・準メンバー用)パネルを設置しました。", ephemeral=True)
+        elif val == "inn_temp":
+            embed = discord.Embed(
+                title="🏠 一般宿 (仮メンバー用)", 
+                description="部屋を有料で借りる", 
+                color=discord.Color.gold()
+            )
+            await channel.send(embed=embed, view=TempInnPanelView())
+            await interaction.response.send_message("✅ 宿屋(仮メンバー用)パネルを設置しました。", ephemeral=True)
+        elif val == "inn_luxury":
+            embed = discord.Embed(
+                title="🏰 高級宿", 
+                description="高級宿を有料で借りる", 
+                color=discord.Color.purple()
+            )
+            await channel.send(embed=embed, view=LuxuryInnPanelView())
+            await interaction.response.send_message("✅ 高級宿パネルを設置しました。", ephemeral=True)
         elif val == "custom_vc":
             embed = discord.Embed(title="✨ カスタムVC", description="自分だけの部屋を作成", color=discord.Color.purple())
             await channel.send(embed=embed, view=CustomRoomView())
@@ -4337,7 +4382,7 @@ async def update_main_admin_panel(interaction: discord.Interaction, bot):
     embed.add_field(
         name="🏨 部屋・宿設定",
         value=(
-            f"🛖 **一般宿** (無料ロール: {', '.join(FREE_INN_ROLE_NAMES)}):\n"
+            f"🛖 **一般宿** (無料ロール: {', '.join(MAIN_SUB_MEMBER_ROLE_NAMES)}):\n"
             f"  ┗ 12時間: {ROOM_SETTINGS['宿'][12]['price']:,} {CURRENCY_NAME}\n"
             f"  ┗ 24時間: {ROOM_SETTINGS['宿'][24]['price']:,} {CURRENCY_NAME}\n"
             f"🏰 **高級宿**:\n"
@@ -4534,7 +4579,7 @@ class BotSetupMainSelect(discord.ui.Select):
             discord.SelectOption(label="👥 新規メンバーロール", value="NEW_MEMBER_ROLE_ID", description="入界後の一般メンバーロール"),
             discord.SelectOption(label="👥 入界待機者ロール", value="PENDING_MEMBER_ROLE_ID", description="面接待ちメンバーのロール"),
             discord.SelectOption(label="👥 面接官ロール", value="INTERVIEWER_ROLE_IDS", description="面接を行える権限ロール"),
-            discord.SelectOption(label="👥 無料宿対象ロール", value="FREE_INN_ROLE_IDS", description="宿屋を無料で利用できるロール"),
+            discord.SelectOption(label="👥 本・準メンバーロール", value="MAIN_SUB_MEMBER_ROLE_IDS", description="一般宿を無料・無制限で利用できる本・準メンバーのロール"),
             discord.SelectOption(label="👥 スタンプ統括ロール", value="EMBLEM_MANAGER_ROLE_ID", description="スタンプ制作を管理するロール"),
             discord.SelectOption(label="👥 スタンプ制作ロール", value="EMBLEM_MASTER_ROLE_ID", description="スタンプを制作するロール"),
             discord.SelectOption(label="👥 告解司祭ロール", value="CONFESSION_PRIEST_ROLE_ID", description="告解を対応する司祭ロール"),
@@ -4571,7 +4616,7 @@ class BotSetupMainView(discord.ui.View):
             f"• 新規メンバー: {format_setting_status(guild, 'NEW_MEMBER_ROLE_ID')}\n"
             f"• 入界待機者: {format_setting_status(guild, 'PENDING_MEMBER_ROLE_ID')}\n"
             f"• 面接官: {format_setting_status(guild, 'INTERVIEWER_ROLE_IDS')}\n"
-            f"• 無料宿対象: {format_setting_status(guild, 'FREE_INN_ROLE_IDS')}\n"
+            f"• 無料宿対象: {format_setting_status(guild, 'MAIN_SUB_MEMBER_ROLE_IDS')}\n"
             f"• スタンプ統括: {format_setting_status(guild, 'EMBLEM_MANAGER_ROLE_ID')}\n"
             f"• スタンプ制作: {format_setting_status(guild, 'EMBLEM_MASTER_ROLE_ID')}\n"
             f"• 告解司祭: {format_setting_status(guild, 'CONFESSION_PRIEST_ROLE_ID')}\n"
