@@ -2925,9 +2925,13 @@ class PanelSelect(discord.ui.Select):
             await channel.send(embed=embed, view=RouletteView())
             await interaction.response.send_message("✅ ルーレットパネルを設置しました。", ephemeral=True)
         elif val == "inn_main":
+            main_sub_roles_str = format_setting_status(interaction.guild, 'MAIN_SUB_MEMBER_ROLE_IDS')
+            if "❌" in main_sub_roles_str: 
+                main_sub_roles_str = f"「{'」や「'.join(MAIN_SUB_MEMBER_ROLE_NAMES)}」"
+            
             embed = discord.Embed(
                 title="🏠 一般宿 (本・準メンバー用)", 
-                description=f"部屋を無料で借りる（時間無制限）\n※対象ロール「{'」や「'.join(MAIN_SUB_MEMBER_ROLE_NAMES)}」をお持ちの方専用", 
+                description=f"部屋を無料で借りる（時間無制限）\n※対象ロール {main_sub_roles_str} をお持ちの方専用", 
                 color=discord.Color.gold()
             )
             await channel.send(embed=embed, view=MainInnPanelView())
