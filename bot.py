@@ -7,7 +7,6 @@ import datetime
 import asyncio
 from dotenv import load_dotenv
 import database
-from keep_alive import keep_alive
 
 # --- 設定 ---
 CURRENCY_NAME = "コイン"
@@ -59,11 +58,15 @@ EVALUATION_FORUM_CHANNEL_IDS = []
 ADMIN_ROLE_NAMES = ["【仮】管理者ロール名A", "【仮】管理者ロール名B"]
 EVALUATOR_ROLE_NAMES = ["【仮】評価員ロール名A", "【仮】評価員ロール名B"]
 
+# --- ランク対象設定 (TC/VC XP対象) は別途DB管理されているため、
+# 初期設定の RANKING_CATEGORY_ID は「評価時間対象カテゴリー」として扱います。
+# 移行のため、キー名は EVAL_TIME_CATEGORY_ID とし、RANKING_CATEGORY_ID からのフォールバックを設けます。
+
 # --- 動的設定管理 (DB保存) ---
 DEFAULT_SETTINGS = {
     "LEVEL_UP_CHANNEL_ID": 123456789012345678,
     "CREATE_VC_CHANNEL_ID": 123456789012345678,
-    "RANKING_CATEGORY_ID": 123456789012345678,
+    "EVAL_TIME_CATEGORY_ID": 123456789012345678,
     "NEW_MEMBER_ROLE_ID": 123456789012345678,
     "PENDING_MEMBER_ROLE_ID": 123456789012345678,
     "INTERVIEWER_ROLE_IDS": [],
@@ -81,7 +84,10 @@ DEFAULT_SETTINGS = {
 def get_setting(key: str):
     if hasattr(bot, 'bot_settings') and key in bot.bot_settings:
         return bot.bot_settings[key]
+    if key == "EVAL_TIME_CATEGORY_ID" and hasattr(bot, 'bot_settings') and "RANKING_CATEGORY_ID" in bot.bot_settings:
+        return bot.bot_settings["RANKING_CATEGORY_ID"]
     return DEFAULT_SETTINGS.get(key)
+
 
 def get_role_by_setting(guild, key, default_name):
     role_id = get_setting(key)
@@ -137,16 +143,17 @@ def is_free_inn_member(user: discord.Member):
         return True
     return False
 
-def is_in_ranking_category(channel):
+def is_in_eval_time_category(channel):
     if not channel or not channel.category:
         return False
-    ranking_cat_id = get_setting("RANKING_CATEGORY_ID")
-    if channel.category.id == ranking_cat_id:
+    eval_cat_id = get_setting("EVAL_TIME_CATEGORY_ID")
+    if channel.category.id == eval_cat_id:
         return True
     ranking_cat_name = get_setting("RANKING_CATEGORY_NAME")
     if ranking_cat_name and ranking_cat_name.lower() in channel.category.name.lower():
         return True
     return False
+
 
 def is_xp_enabled(channel):
     try:
@@ -158,17 +165,18 @@ def is_xp_enabled(channel):
         wl_categories = cfg.get("whitelist_categories", set())
         bl_categories = cfg.get("blacklist_categories", set())
         
-        # If no specific settings, fallback to original ranking category logic
+        # どちらも未指定の場合はすべてのチャンネルを対象にする
         if not whitelist and not blacklist and not wl_categories and not bl_categories:
-            return is_in_ranking_category(channel)
+            return True
             
-        # Blacklist channel or category takes precedence
+        # 無効チャンネル・カテゴリーは最優先で除外
         if channel.id in blacklist:
             return False
         if channel.category and channel.category.id in bl_categories:
             return False
             
-        # Whitelist check (if any whitelist is defined)
+        # 有効（ホワイトリスト）が指定されている場合はその中のみ対象
+        # 有効が指定されていない場合は無効以外すべてが対象
         if whitelist or wl_categories:
             in_whitelist = (channel.id in whitelist) or (channel.category and channel.category.id in wl_categories)
             if not in_whitelist:
@@ -186,13 +194,14 @@ def is_in_evaluation_category(channel):
     categories = cfg.get("categories", set())
     if categories:
         return channel.category.id in categories
-    ranking_cat_id = get_setting("RANKING_CATEGORY_ID")
-    if channel.category.id == ranking_cat_id:
+    eval_cat_id = get_setting("EVAL_TIME_CATEGORY_ID")
+    if channel.category.id == eval_cat_id:
         return True
     ranking_cat_name = get_setting("RANKING_CATEGORY_NAME")
     if ranking_cat_name and ranking_cat_name.lower() in channel.category.name.lower():
         return True
     return False
+
 
 def format_evaluation_datetime(dt: datetime.datetime) -> str:
     if not dt:
@@ -235,10 +244,12 @@ class EconomyBot(commands.Bot):
         self.message_cooldowns = {} # {user_id: timestamp} (通貨用)
         self.tc_xp_cooldowns = {}   # {user_id: timestamp} (経験値用)
         self.vc_sessions = {}       # {user_id: join_timestamp}
+        self.eval_vc_sessions = {}  # {user_id: join_timestamp} (評価浮上時間用)
         self.empty_custom_vcs = {}  # {channel_id: empty_since_timestamp}
         self.auto_vc_triggers = set()
         self.evaluation_settings = {}  # {guild_id: {"forum_channel_ids": set, "self_intro_channel_ids": set}}
         self.rank_settings = {}  # {guild_id: {"whitelist": set, "blacklist": set, "categories": set}}
+
 
     def get_evaluation_config(self, guild_id: int) -> dict:
         if guild_id not in self.evaluation_settings:
@@ -416,7 +427,52 @@ class EconomyBot(commands.Bot):
                 # ユーザーがどのVCにもいない、またはオフライン
                 self.vc_sessions.pop(user_id, None)
 
+        # 評価時間対象カテゴリーの浮上時間（毎分中間保存）
+        eval_cat_id = get_setting("EVAL_TIME_CATEGORY_ID")
+        for user_id, last_reward_time in list(self.eval_vc_sessions.items()):
+            member = None
+            for guild in self.guilds:
+                m = guild.get_member(user_id)
+                if m and m.voice and m.voice.channel:
+                    member = m
+                    break
+            
+            if member:
+                # 依然として評価時間対象カテゴリーにいるかチェック
+                in_correct_category = member.voice.channel.category and member.voice.channel.category.id == eval_cat_id
+                if not in_correct_category:
+                    self.eval_vc_sessions.pop(user_id, None)
+                    continue
+
+                elapsed_seconds = int((now - last_reward_time).total_seconds())
+                if elapsed_seconds >= 60:
+                    await database.add_evaluation_vc_time(user_id, elapsed_seconds)
+                    print(f"[Eval Time] Mid-loop added {elapsed_seconds}s to {member.display_name}")
+                    self.eval_vc_sessions[user_id] = now
+            else:
+                self.eval_vc_sessions.pop(user_id, None)
+
+
 bot = EconomyBot()
+
+@bot.event
+async def on_ready():
+    now_aware = datetime.datetime.now(JST)
+    eval_cat_id = get_setting("EVAL_TIME_CATEGORY_ID")
+    for guild in bot.guilds:
+        for vc in guild.voice_channels:
+            xp_enabled = is_xp_enabled(vc)
+            is_eval = vc.category and vc.category.id == eval_cat_id
+            for member in vc.members:
+                if member.bot:
+                    continue
+                if xp_enabled and member.id not in bot.vc_sessions:
+                    bot.vc_sessions[member.id] = now_aware
+                    print(f"[Startup] Started VC XP session for {member.display_name}")
+                if is_eval and member.id not in bot.eval_vc_sessions:
+                    bot.eval_vc_sessions[member.id] = now_aware
+                    print(f"[Startup] Started VC Eval session for {member.display_name}")
+
 
 # --- ログ用ヘルパー ---
 async def send_log(guild: discord.Guild, log_type: str, embed: discord.Embed):
@@ -552,8 +608,28 @@ async def on_voice_state_update(member, before, after):
         now_naive = database.get_now_naive()
         now_aware = datetime.datetime.now(JST)
 
+        # 評価時間対象カテゴリーの滞在時間追跡
+        eval_cat_id = get_setting("EVAL_TIME_CATEGORY_ID")
+        was_in_eval = before.channel and before.channel.category and before.channel.category.id == eval_cat_id
+        is_in_eval = after.channel and after.channel.category and after.channel.category.id == eval_cat_id
+
+        # 評価対象カテゴリーから退出・移動した時、滞在時間を加算
+        if was_in_eval and not is_in_eval:
+            join_time = bot.eval_vc_sessions.pop(user_id, None)
+            if join_time:
+                elapsed_seconds = int((now_aware - join_time).total_seconds())
+                if elapsed_seconds > 0:
+                    await database.add_evaluation_vc_time(user_id, elapsed_seconds)
+                    print(f"[Eval Time] Added {elapsed_seconds}s to {member.display_name}")
+
+        # 評価対象カテゴリーに参加・移動した時、セッション開始
+        if is_in_eval and not was_in_eval:
+            bot.eval_vc_sessions[user_id] = now_aware
+            print(f"[Eval Time] Started session for {member.display_name}")
+
         # 1. VCから退出・移動した時 (先に処理してXPを付与し、セッションをクリーンアップ)
         if before.channel is not None and (after.channel is None or before.channel.id != after.channel.id):
+
             join_time = bot.vc_sessions.pop(user_id, None)
             if join_time:
                 duration_minutes = int((now_aware - join_time).total_seconds() / 60)
@@ -851,12 +927,14 @@ async def pay(interaction: discord.Interaction, target: discord.Member, amount: 
     if target.bot:
         await interaction.response.send_message("Botには送金できません。", ephemeral=True)
         return
+    # defer() でインタラクションを延長（DBアクセスが3秒を超えても Unknown Interaction にならないように）
+    await interaction.response.defer()
     success = await database.remove_balance(interaction.user.id, amount)
     if not success:
-        await interaction.response.send_message("残高が不足しています。", ephemeral=True)
+        await interaction.followup.send("残高が不足しています。", ephemeral=True)
         return
     await database.add_balance(target.id, amount)
-    await interaction.response.send_message(f"{target.mention} に **{amount} {CURRENCY_NAME}** を送金しました！")
+    await interaction.followup.send(f"{target.mention} に **{amount} {CURRENCY_NAME}** を送金しました！")
 
 @bot.tree.command(name="rank", description="自分または他ユーザーのランク（レベル）を表示します")
 async def rank(interaction: discord.Interaction, user: discord.Member = None):
@@ -907,38 +985,40 @@ async def rank(interaction: discord.Interaction, user: discord.Member = None):
         )
         embed.add_field(name="💬 テキスト活動 (TC)", value=tc_value, inline=False)
 
-        # VC滞在時間表示の追加
-        stay_duration_str = ""
+        # カテゴリー別VC滞在時間の表示
+        # 評価時間対象カテゴリーを取得
+        eval_time_cat_id = get_setting("EVAL_TIME_CATEGORY_ID")
+
+        current_session_str = ""
+
         if target_user.voice and target_user.voice.channel:
-            channel = target_user.voice.channel
-            if is_in_evaluation_category(channel):
-                join_time = bot.vc_sessions.get(target_user.id)
-                if join_time:
-                    now_aware = datetime.datetime.now(JST)
-                    delta_sec = (now_aware - join_time).total_seconds()
-                    hours = int(delta_sec // 3600)
-                    minutes = int((delta_sec % 3600) // 60)
-                    if hours > 0:
-                        duration_str = f"{hours}時間{minutes}分"
-                    else:
-                        duration_str = f"{minutes}分"
-                    stay_duration_str = f"\n🟢 **評価対象カテゴリー滞在時間:** {duration_str} (評価対象カテゴリーに滞在中)"
-                else:
-                    stay_duration_str = f"\n🟢 **評価対象カテゴリー滞在時間:** 0分 (評価対象カテゴリーに滞在中)"
-            elif is_xp_enabled(channel):
-                join_time = bot.vc_sessions.get(target_user.id)
-                if join_time:
-                    now_aware = datetime.datetime.now(JST)
-                    delta_sec = (now_aware - join_time).total_seconds()
-                    hours = int(delta_sec // 3600)
-                    minutes = int((delta_sec % 3600) // 60)
-                    if hours > 0:
-                        duration_str = f"{hours}時間{minutes}分"
-                    else:
-                        duration_str = f"{minutes}分"
-                    stay_duration_str = f"\n🟢 **現在の滞在時間:** {duration_str} (経験値対象VCに滞在中)"
-                else:
-                    stay_duration_str = f"\n🟢 **現在の滞在時間:** 0分 (経験値対象VCに滞在中)"
+            vc = target_user.voice.channel
+            cat = vc.category
+            join_time = bot.vc_sessions.get(target_user.id)
+            if join_time:
+                now_aware = datetime.datetime.now(JST)
+                delta_sec = (now_aware - join_time).total_seconds()
+                hours = int(delta_sec // 3600)
+                mins = int((delta_sec % 3600) // 60)
+                dur_str = f"{hours}時間{mins}分" if hours > 0 else f"{mins}分"
+            else:
+                dur_str = "0分"
+
+            if cat and cat.id == eval_time_cat_id:
+                current_session_str = (
+                    f"\n🟢 **現在の滞在先:** {vc.mention} (評価対象)\n"
+                    f"　⏱️ 今回の滞在時間: **{dur_str}**"
+                )
+            elif is_xp_enabled(vc):
+                current_session_str = (
+                    f"\n🟡 **現在の滞在先:** {vc.mention} (XP対象・評価対象外)\n"
+                    f"　⏱️ 今回の滞在時間: **{dur_str}**"
+                )
+            else:
+                current_session_str = (
+                    f"\n⚪ **現在の滞在先:** {vc.mention} (XP対象外)\n"
+                    f"　⏱️ 今回の滞在時間: **{dur_str}**"
+                )
 
         # VCランク
         vc_value = (
@@ -947,9 +1027,32 @@ async def rank(interaction: discord.Interaction, user: discord.Member = None):
             f"{create_progress_bar(vc_xp, vc_next)}\n"
             f"┗ 次のレベルまであと **{vc_needed}** XP\n"
             f"┗ 目安: あと **約{vc_est_mins}分** の滞在"
-            f"{stay_duration_str}"
+            f"{current_session_str}"
         )
         embed.add_field(name="🎙️ ボイス活動 (VC)", value=vc_value, inline=False)
+
+        # 評価浮上時間
+        eval_time_sec = user_data.get("evaluation_vc_time", 0)
+        join_time = bot.eval_vc_sessions.get(target_user.id)
+        if join_time:
+            now_aware = datetime.datetime.now(JST)
+            current_sec = int((now_aware - join_time).total_seconds())
+            if current_sec > 0:
+                eval_time_sec += current_sec
+
+        def format_duration(seconds: int) -> str:
+            hours = seconds // 3600
+            minutes = (seconds % 3600) // 60
+            if hours > 0:
+                return f"{hours}時間{minutes}分"
+            return f"{minutes}分"
+
+        embed.add_field(
+            name="⏱️ 評価浮上時間",
+            value=f"**{format_duration(eval_time_sec)}**",
+            inline=False
+        )
+
 
         embed.set_footer(text=f"Requested by {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
         embed.timestamp = datetime.datetime.now(JST)
@@ -1968,9 +2071,16 @@ async def process_room_purchase(interaction: discord.Interaction, room_type: str
     
     if price == 0 or await database.remove_balance(owner_id, price):
         try:
-            overwrites = { interaction.guild.default_role: discord.PermissionOverwrite(connect=True),
-                           interaction.user: discord.PermissionOverwrite(manage_channels=True, move_members=True) }
-            if room_type == "高級宿": overwrites[interaction.user].manage_permissions = True
+            if room_type == "高級宿":
+                overwrites = {
+                    interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                    interaction.user: discord.PermissionOverwrite(view_channel=True, connect=True, manage_channels=True, move_members=True, manage_permissions=True)
+                }
+            else:
+                overwrites = {
+                    interaction.guild.default_role: discord.PermissionOverwrite(connect=True),
+                    interaction.user: discord.PermissionOverwrite(manage_channels=True, move_members=True)
+                }
             channel = await interaction.guild.create_voice_channel(name=f"{room_type}-{interaction.user.display_name}", category=interaction.channel.category, overwrites=overwrites, user_limit=(2 if room_type=="宿" else 0))
             expire_at = database.get_now_naive() + datetime.timedelta(hours=duration)
             await database.add_room(channel.id, owner_id, room_type, expire_at)
@@ -3668,6 +3778,63 @@ async def update_evaluation_settings_config_view(interaction: discord.Interactio
     
     embed.add_field(name="現在の設定一覧", value=f"• **評価用フォーラム**: {forum_ch_str}\n• **自己紹介チャンネル**: {self_intro_ch_str}", inline=False)
     
+    # 評価対象カテゴリーに滞在中のメンバーと滞在時間を表示
+    rank_cfg = bot.get_rank_config(interaction.guild_id)
+    eval_categories = rank_cfg.get("categories", set()) or rank_cfg.get("whitelist_categories", set())
+    # フォールバック: EVAL_TIME_CATEGORY_ID
+    if not eval_categories:
+        fallback_cat_id = get_setting("EVAL_TIME_CATEGORY_ID")
+        if fallback_cat_id and fallback_cat_id != 123456789012345678:
+            eval_categories = {fallback_cat_id}
+
+    
+    if eval_categories:
+        now_aware = datetime.datetime.now(JST)
+        staying_strs = []
+        guild = interaction.guild
+        for member in guild.members:
+            if member.bot:
+                continue
+            if not (member.voice and member.voice.channel):
+                continue
+            vc = member.voice.channel
+            if not vc.category:
+                continue
+            if vc.category.id not in eval_categories:
+                continue
+            # 評価対象カテゴリーに滞在中
+            join_time = bot.vc_sessions.get(member.id)
+            if join_time:
+                delta_sec = (now_aware - join_time).total_seconds()
+                hours = int(delta_sec // 3600)
+                mins = int((delta_sec % 3600) // 60)
+                if hours > 0:
+                    dur_str = f"{hours}時間{mins}分"
+                else:
+                    dur_str = f"{mins}分"
+            else:
+                dur_str = "0分"
+            staying_strs.append(f"• {member.mention} — {vc.mention} — **{dur_str}**")
+        
+        cat_names = []
+        for cid in eval_categories:
+            cat = guild.get_channel(cid)
+            cat_names.append(f"📁 {cat.name}" if cat else f"ID: {cid}")
+        cat_label = ", ".join(cat_names)
+        
+        if staying_strs:
+            staying_value = "\n".join(staying_strs[:20])  # 最大20人まで表示
+            if len(staying_strs) > 20:
+                staying_value += f"\n… 他 {len(staying_strs) - 20} 人"
+        else:
+            staying_value = "現在滞在しているメンバーはいません。"
+        
+        embed.add_field(
+            name=f"🟢 評価対象カテゴリー滞在状況 ({cat_label})",
+            value=staying_value,
+            inline=False
+        )
+    
     if interaction.is_expired() or interaction.response.is_done():
         await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=view)
     else:
@@ -3832,14 +3999,16 @@ async def update_rank_settings_config_view(interaction: discord.Interaction, bot
     embed = discord.Embed(
         title="📊 ランク対象設定 (TC/VC XP)",
         description=(
-            "テキスト（TC）およびボイス（VC）の経験値が貯まるチャンネル・カテゴリーを設定します。\n\n"
+            "テキスト（TC）およびボイス（VC）の経験値が貯まるチャンネル・カテゴリーを設定します。\n"
+            "チャンネル単位でもカテゴリー単位でもまとめて指定できます。\n\n"
             "**【判定ルール】**\n"
-            "1. **対応（有効）の指定がない場合**: 非対応チャンネル**以外**すべてが対象になります。\n"
-            "2. **非対応（無効）の指定がない場合**: 対応チャンネル・カテゴリー**のみ**が対象になります。\n"
-            "3. **両方指定されている場合**: 対応リストに含まれ、かつ非対応チャンネルに含まれないチャンネルが対象になります。\n"
+            "1. **有効の指定がない場合**: 無効に指定したチャンネル・カテゴリー**以外**すべてが対象になります。\n"
+            "2. **無効の指定がない場合**: 有効に指定したチャンネル・カテゴリー**のみ**が対象になります。\n"
+            "3. **両方指定されている場合**: 有効リストに含まれ、かつ無効リストに含まれないチャンネルが対象になります。\n"
             "4. **どちらも指定がない場合**: すべてのチャンネルが対象になります。\n\n"
             "**【設定手順】**\n"
-            "- 各ドロップダウンメニューから、対応/非対応チャンネル、または対象カテゴリーを選択（各最大25個）できます。\n"
+            "- チャンネル単位: 上2つのドロップダウンから有効/無効チャンネルを選択します（各最大25個）。\n"
+            "- カテゴリー単位: 下2つのドロップダウンからカテゴリーを選択するとそのカテゴリー内全チャンネルに適用されます。\n"
             "- 各「クリア」ボタンで設定を初期化できます。"
         ),
         color=discord.Color.blue()
@@ -4355,7 +4524,7 @@ class BotSetupMainSelect(discord.ui.Select):
             discord.SelectOption(label="👥 司祭ロール", value="PRIEST_ROLE_ID", description="相談を対応する司祭ロール"),
             discord.SelectOption(label="📺 レベルアップチャンネル", value="LEVEL_UP_CHANNEL_ID", description="レベルアップ通知を送る先"),
             discord.SelectOption(label="📺 VC作成トリガー", value="CREATE_VC_CHANNEL_ID", description="入室すると自動VCを作る部屋"),
-            discord.SelectOption(label="📺 ランク対象カテゴリー", value="RANKING_CATEGORY_ID", description="XP獲得が有効なカテゴリー"),
+            discord.SelectOption(label="📺 評価時間対象カテゴリー", value="EVAL_TIME_CATEGORY_ID", description="評価時間を計測するカテゴリー"),
             discord.SelectOption(label="📺 自己紹介チャンネル", value="SELF_INTRO_CHANNEL_IDS", description="自己紹介を行う部屋（複数可）"),
             discord.SelectOption(label="📺 評価フォーラム", value="EVALUATION_FORUM_CHANNEL_IDS", description="評価用スレッドが作られるフォーラム")
         ]
@@ -4396,12 +4565,13 @@ class BotSetupMainView(discord.ui.View):
         channels_text = (
             f"• レベルアップ通知: {format_setting_status(guild, 'LEVEL_UP_CHANNEL_ID')}\n"
             f"• VC作成トリガー: {format_setting_status(guild, 'CREATE_VC_CHANNEL_ID')}\n"
-            f"• ランク対象カテゴリ: {format_setting_status(guild, 'RANKING_CATEGORY_ID')}\n"
+            f"• 評価時間対象カテゴリ: {format_setting_status(guild, 'EVAL_TIME_CATEGORY_ID')}\n"
             f"• 自己紹介部屋: {format_setting_status(guild, 'SELF_INTRO_CHANNEL_IDS')}\n"
             f"• 評価フォーラム: {format_setting_status(guild, 'EVALUATION_FORUM_CHANNEL_IDS')}"
         )
         embed.add_field(name="📺 チャンネル・カテゴリー設定", value=channels_text, inline=False)
         return embed
+
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user != self.user:
@@ -4730,7 +4900,6 @@ class EvaluationGroup(app_commands.Group):
 if __name__ == "__main__":
     if TOKEN:
         discord.utils.setup_logging()
-        keep_alive()
         bot.run(TOKEN)
     else:
         print("Error: DISCORD_BOT_TOKEN is not set in .env")
