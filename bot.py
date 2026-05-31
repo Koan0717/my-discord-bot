@@ -213,22 +213,41 @@ def format_evaluation_datetime(dt: datetime.datetime) -> str:
 
 async def check_and_assign_level_roles(member: discord.Member, level_type: str, new_level: int):
     rewards = await database.get_level_role_rewards(level_type)
-    roles_to_add = []
+    if not rewards:
+        return
+
+    target_level = -1
     for r in rewards:
         if r["level"] <= new_level:
-            role = member.guild.get_role(r["role_id"])
-            if role and role not in member.roles:
+            target_level = max(target_level, r["level"])
+
+    roles_to_add = []
+    roles_to_remove = []
+
+    for r in rewards:
+        role = member.guild.get_role(r["role_id"])
+        if not role: continue
+
+        if r["level"] == target_level:
+            if role not in member.roles:
                 roles_to_add.append(role)
-    if roles_to_add:
-        try:
+        else:
+            if role in member.roles:
+                roles_to_remove.append(role)
+
+    try:
+        if roles_to_remove:
+            await member.remove_roles(*roles_to_remove, reason=f"{level_type.upper()}レベル更新 (古いロールの解除)")
+        if roles_to_add:
             await member.add_roles(*roles_to_add, reason=f"{level_type.upper()}レベル到達報酬 (Lv.{new_level})")
+            
             role_mentions = ", ".join([role.mention for role in roles_to_add])
             lv_channel_id = get_setting("LEVEL_UP_CHANNEL_ID")
             lv_channel = member.guild.get_channel(lv_channel_id)
             if lv_channel:
                 await lv_channel.send(f"🎁 {member.mention} が {level_type.upper()} レベル {new_level} に達したため、以下のロールが付与されました！\n{role_mentions}")
-        except Exception as e:
-            print(f"[ERROR] check_and_assign_level_roles for {member.display_name}: {e}")
+    except Exception as e:
+        print(f"[ERROR] check_and_assign_level_roles for {member.display_name}: {e}")
 
 # ------------
 
