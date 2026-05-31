@@ -4899,6 +4899,8 @@ class EvaluationGroup(app_commands.Group):
 
 # --- 実行 ---
 if __name__ == "__main__":
+    import keep_alive
+    keep_alive.keep_alive()
     if TOKEN:
         discord.utils.setup_logging()
         bot.run(TOKEN)
