@@ -321,7 +321,9 @@ class EconomyBot(commands.Bot):
         except Exception as e:
             print(f"[ERROR] Failed to load room prices from DB: {e}")
 
-        self.add_view(RoomView())
+        self.add_view(MainInnPanelView())
+        self.add_view(TempInnPanelView())
+        self.add_view(LuxuryInnPanelView())
         self.add_view(CustomRoomView())
         self.add_view(InnControlView())
         self.add_view(RoomControlView())
