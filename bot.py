@@ -4873,7 +4873,15 @@ class AdminGroup(app_commands.Group):
 
 class InterviewerGroup(app_commands.Group):
     def __init__(self): super().__init__(name="面接官", description="【面接官専用】手続きコマンド")
-    
+
+    @app_commands.command(name="help", description="面接官用コマンドの使い方を表示します")
+    async def help_cmd(self, interaction: discord.Interaction):
+        embed = discord.Embed(title="👔 面接官コマンドの使い方", color=discord.Color.blue())
+        embed.add_field(name="/面接官 パネル設置_入界手続き", value="新規メンバーが入界手続きを行うためのボタン付きパネルを現在のチャンネルに送信します。", inline=False)
+        embed.add_field(name="/面接官 入界手続き実行", value="現在のチャンネルの履歴（最大50件）から、待機者ロールを持つユーザーの発言を読み取り、「入力された名前への変更」「新規メンバーロールの付与」「待機者ロールの剥奪」「初期通貨の付与」を一括で自動実行します。", inline=False)
+        embed.add_field(name="/面接官 チャット削除", value="現在のチャンネルのチャット履歴を、指定した件数分（デフォルト100件）削除します。", inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
     @app_commands.command(name="パネル設置_入界手続き", description="入界手続きパネルを送信")
     async def s_int(self, it):
         if not has_interviewer_role(it.user) and not has_admin_role(it.user) and not it.user.guild_permissions.administrator:
@@ -4950,6 +4958,14 @@ class InterviewerGroup(app_commands.Group):
 
 class EvaluationGroup(app_commands.Group):
     def __init__(self): super().__init__(name="評価期間", description="評価期間関連コマンド")
+
+    @app_commands.command(name="help", description="評価期間関連コマンドの使い方を表示します")
+    async def help_cmd(self, interaction: discord.Interaction):
+        embed = discord.Embed(title="⏳ 評価期間コマンドの使い方", color=discord.Color.green())
+        embed.add_field(name="/評価期間 一覧", value="【運営・評価員専用】現在評価期間中となっているユーザーとその終了予定日時の一覧を表示します。", inline=False)
+        embed.add_field(name="/評価期間 確認 [ユーザー]", value="指定したユーザー（指定なしの場合は自分）の評価期間の開始・終了日時を確認します。", inline=False)
+        embed.add_field(name="/評価期間 延長 <ユーザー> <日数>", value="【運営・評価員専用】指定したユーザーの評価期間を、指定した日数分だけ延長します。", inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="一覧", description="【運営・評価員専用】評価期間中のユーザー一覧を表示")
     async def list_periods(self, interaction: discord.Interaction):
