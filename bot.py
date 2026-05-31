@@ -78,6 +78,7 @@ DEFAULT_SETTINGS = {
     "PRIEST_ROLE_ID": 123456789012345678,
     "ADMIN_ROLE_IDS": [],
     "EVALUATOR_ROLE_IDS": [],
+    "EVENT_MANAGER_ROLE_IDS": [],
     "SELF_INTRO_CHANNEL_IDS": [],
     "EVALUATION_FORUM_CHANNEL_IDS": []
 }
@@ -102,6 +103,15 @@ def get_role_by_id_or_name(guild, role_id, default_name):
     if not role:
         role = discord.utils.get(guild.roles, name=default_name)
     return role
+
+def has_event_manager_role(user: discord.Member):
+    event_manager_role_ids = get_setting("EVENT_MANAGER_ROLE_IDS")
+    if not event_manager_role_ids:
+        event_manager_role_ids = []
+    user_role_ids = [role.id for role in user.roles]
+    if any(rid in event_manager_role_ids for rid in user_role_ids) or user.guild_permissions.administrator:
+        return True
+    return False
 
 def has_admin_role(user: discord.Member):
     admin_role_ids = get_setting("ADMIN_ROLE_IDS")
@@ -4635,6 +4645,7 @@ class BotSetupMainSelect(discord.ui.Select):
             discord.SelectOption(label="👥 スタンプ制作ロール", value="EMBLEM_MASTER_ROLE_ID", description="スタンプを制作するロール"),
             discord.SelectOption(label="👥 告解司祭ロール", value="CONFESSION_PRIEST_ROLE_ID", description="告解を対応する司祭ロール"),
             discord.SelectOption(label="👥 司祭ロール", value="PRIEST_ROLE_ID", description="相談を対応する司祭ロール"),
+            discord.SelectOption(label="👥 イベント管理ロール", value="EVENT_MANAGER_ROLE_IDS", description="イベント登録・編集・削除ができるロール"),
             discord.SelectOption(label="📺 レベルアップチャンネル", value="LEVEL_UP_CHANNEL_ID", description="レベルアップ通知を送る先"),
             discord.SelectOption(label="📺 VC作成トリガー", value="CREATE_VC_CHANNEL_ID", description="入室すると自動VCを作る部屋"),
             discord.SelectOption(label="📺 評価時間対象カテゴリー", value="EVAL_TIME_CATEGORY_ID", description="評価時間を計測するカテゴリー"),
@@ -4671,7 +4682,8 @@ class BotSetupMainView(discord.ui.View):
             f"• スタンプ統括: {format_setting_status(guild, 'EMBLEM_MANAGER_ROLE_ID')}\n"
             f"• スタンプ制作: {format_setting_status(guild, 'EMBLEM_MASTER_ROLE_ID')}\n"
             f"• 告解司祭: {format_setting_status(guild, 'CONFESSION_PRIEST_ROLE_ID')}\n"
-            f"• 司祭: {format_setting_status(guild, 'PRIEST_ROLE_ID')}"
+            f"• 司祭: {format_setting_status(guild, 'PRIEST_ROLE_ID')}\n"
+            f"• イベント管理: {format_setting_status(guild, 'EVENT_MANAGER_ROLE_IDS')}"
         )
         embed.add_field(name="👥 ロール設定", value=roles_text, inline=False)
         
@@ -5068,6 +5080,19 @@ class EventGroup(app_commands.Group):
     def __init__(self):
         super().__init__(name="イベント", description="イベントのスケジュール管理を行います")
 
+    @app_commands.command(name="help", description="イベント管理機能の使い方を表示します")
+    async def show_help(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="📅 イベントスケジュール管理機能の使い方",
+            description="イベントや予定を簡単に登録・共有できます！",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="1. /イベント 登録", value="新しいイベントを作成します。企画書のURLも登録可能です。", inline=False)
+        embed.add_field(name="2. /イベント 一覧", value="登録されているイベントを一覧で表示します。リンクもクリックできます。", inline=False)
+        embed.add_field(name="3. /イベント 修正", value="イベントの内容を修正したり、後から企画書を追加したりできます。", inline=False)
+        embed.add_field(name="4. /イベント 削除", value="イベントを一覧から削除します。", inline=False)
+        await interaction.response.send_message(embed=embed)
+
     @app_commands.command(name="登録", description="新しいイベントをスケジュールに登録します")
     @app_commands.describe(name="イベント名", start_date="開始日 (例: 5/10 21:00)", end_date="終了日（任意）", detail="詳細（任意）", proposal_url="企画書のURL（任意）")
     async def add_event(self, interaction: discord.Interaction, name: str, start_date: str, end_date: str = "", detail: str = "", proposal_url: str = ""):
@@ -5139,6 +5164,9 @@ class EventGroup(app_commands.Group):
     @app_commands.command(name="修正", description="登録済みのイベント内容を修正します")
     @app_commands.describe(event_id="修正するイベントのID", name="新しいイベント名（任意）", start_date="新しい開始日（任意）", end_date="新しい終了日（任意）", detail="新しい詳細（任意）", proposal_url="新しい企画書URL（任意）")
     async def edit_event(self, interaction: discord.Interaction, event_id: int, name: str = None, start_date: str = None, end_date: str = None, detail: str = None, proposal_url: str = None):
+        if not has_event_manager_role(interaction.user):
+            await interaction.response.send_message("このコマンドを実行する権限がありません。", ephemeral=True)
+            return
         events = load_events()
         eid_str = str(event_id)
         if eid_str not in events:
@@ -5162,6 +5190,9 @@ class EventGroup(app_commands.Group):
     @app_commands.command(name="削除", description="登録済みのイベントを削除します")
     @app_commands.describe(event_id="削除するイベントのID")
     async def delete_event(self, interaction: discord.Interaction, event_id: int):
+        if not has_event_manager_role(interaction.user):
+            await interaction.response.send_message("このコマンドを実行する権限がありません。", ephemeral=True)
+            return
         events = load_events()
         eid_str = str(event_id)
         if eid_str not in events:
