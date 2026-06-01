@@ -289,7 +289,7 @@ async def get_top_users(mode: str, limit: int = 10) -> list[dict]:
     order_field = "tc_xp" if mode == "tc" else "vc_xp"
     level_field = "tc_level" if mode == "tc" else "vc_level"
     async with pool.acquire() as conn:
-        rows = await conn.fetch(f'SELECT user_id, {order_field} as xp, {level_field} as level FROM users ORDER BY {order_field} DESC LIMIT $1', limit)
+        rows = await conn.fetch(f'SELECT user_id, {order_field} as xp, {level_field} as level FROM users ORDER BY {level_field} DESC, {order_field} DESC LIMIT $1', limit)
         return [{"user_id": r["user_id"], "xp": r["xp"], "level": r["level"]} for r in rows]
 
 async def reset_user_rank(user_id: int):
