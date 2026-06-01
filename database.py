@@ -162,12 +162,16 @@ async def setup_db():
             await conn.execute('ALTER TABLE rank_settings ADD COLUMN IF NOT EXISTS blacklist_category_ids BIGINT[] NOT NULL DEFAULT \'{}\'')
         except Exception as e:
             print(f"[Migration] rank_settings migration warning: {e}")
+        try:
+            await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS evaluation_vc_time INTEGER DEFAULT 0')
+        except Exception as e:
+            print(f"[Migration] users evaluation_vc_time migration warning: {e}")
 
 
 async def get_user(user_id: int):
     p = await get_pool()
     async with p.acquire() as conn:
-        row = await conn.fetchrow('SELECT balance, chinchiro_count, chinchiro_last_date, tc_xp, tc_level, vc_xp, vc_level FROM users WHERE user_id = $1', user_id)
+        row = await conn.fetchrow('SELECT balance, chinchiro_count, chinchiro_last_date, tc_xp, tc_level, vc_xp, vc_level, evaluation_vc_time FROM users WHERE user_id = $1', user_id)
         if row:
             return {
                 "balance": row['balance'], 
@@ -176,11 +180,12 @@ async def get_user(user_id: int):
                 "tc_xp": row['tc_xp'],
                 "tc_level": row['tc_level'],
                 "vc_xp": row['vc_xp'],
-                "vc_level": row['vc_level']
+                "vc_level": row['vc_level'],
+                "evaluation_vc_time": row['evaluation_vc_time']
             }
         else:
             await conn.execute('INSERT INTO users (user_id, balance) VALUES ($1, 0) ON CONFLICT (user_id) DO NOTHING', user_id)
-            return {"balance": 0, "chinchiro_count": 0, "chinchiro_last_date": None, "tc_xp": 0, "tc_level": 1, "vc_xp": 0, "vc_level": 1}
+            return {"balance": 0, "chinchiro_count": 0, "chinchiro_last_date": None, "tc_xp": 0, "tc_level": 1, "vc_xp": 0, "vc_level": 1, "evaluation_vc_time": 0}
 
 async def get_balance(user_id: int) -> int:
     user = await get_user(user_id)
@@ -279,12 +284,20 @@ async def get_expired_rooms():
         return [row['channel_id'] for row in rows]
 
 # --- 管理用リセット関数 ---
+async def get_top_users(mode: str, limit: int = 10) -> list[dict]:
+    pool = await get_pool()
+    order_field = "tc_xp" if mode == "tc" else "vc_xp"
+    level_field = "tc_level" if mode == "tc" else "vc_level"
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(f'SELECT user_id, {order_field} as xp, {level_field} as level FROM users ORDER BY {order_field} DESC LIMIT $1', limit)
+        return [{"user_id": r["user_id"], "xp": r["xp"], "level": r["level"]} for r in rows]
+
 async def reset_user_rank(user_id: int):
     p = await get_pool()
     async with p.acquire() as conn:
         await conn.execute('''
             UPDATE users 
-            SET tc_xp = 0, tc_level = 1, vc_xp = 0, vc_level = 1 
+            SET tc_xp = 0, tc_level = 1, vc_xp = 0, vc_level = 1, evaluation_vc_time = 0 
             WHERE user_id = $1
         ''', user_id)
 
@@ -628,5 +641,11 @@ async def set_rank_settings(guild_id: int, whitelist_ids: list[int], blacklist_i
             ON CONFLICT (guild_id)
             DO UPDATE SET whitelist_channel_ids = $2, blacklist_channel_ids = $3, whitelist_category_ids = $4, blacklist_category_ids = $5
         ''', guild_id, whitelist_ids, blacklist_ids, whitelist_cat_ids, blacklist_cat_ids)
+
+async def add_evaluation_vc_time(user_id: int, seconds: int):
+    await get_user(user_id)
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('UPDATE users SET evaluation_vc_time = evaluation_vc_time + $1 WHERE user_id = $2', seconds, user_id)
 
 

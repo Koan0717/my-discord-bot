@@ -986,7 +986,51 @@ async def pay(interaction: discord.Interaction, target: discord.Member, amount: 
     await database.add_balance(target.id, amount)
     await interaction.followup.send(f"{target.mention} に **{amount} {CURRENCY_NAME}** を送金しました！")
 
-@bot.tree.command(name="rank", description="自分または他ユーザーのランク（レベル）を表示します")
+rank_group = app_commands.Group(name="rank", description="ランク（レベル）関連のコマンド")
+bot.tree.add_command(rank_group)
+
+rank_top_group = app_commands.Group(name="top", description="ランキング上位を表示します", parent=rank_group)
+
+@rank_top_group.command(name="tc", description="テキストチャット(TC)のランキング上位10名を表示します")
+async def rank_top_tc(interaction: discord.Interaction):
+    await _show_ranking(interaction, "tc")
+
+@rank_top_group.command(name="vc", description="ボイスチャット(VC)のランキング上位10名を表示します")
+async def rank_top_vc(interaction: discord.Interaction):
+    await _show_ranking(interaction, "vc")
+
+async def _show_ranking(interaction: discord.Interaction, mode: str):
+    await interaction.response.defer()
+    try:
+        top_users = await database.get_top_users(mode, 10)
+        
+        embed = discord.Embed(
+            title="💬 TCランキング上位10名" if mode == "tc" else "🎙️ VCランキング上位10名",
+            color=0x2f3136
+        )
+        
+        desc = ""
+        for i, u in enumerate(top_users):
+            member = interaction.guild.get_member(u["user_id"])
+            name = member.display_name if member else f"不明なユーザー({u['user_id']})"
+            desc += f"**{i+1}位** {name} - Lv.{u['level']} ({u['xp']} XP)\n"
+            
+        if not desc:
+            desc = "データがありません。"
+            
+        embed.description = desc
+        embed.set_footer(text=f"Requested by {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
+        embed.timestamp = datetime.datetime.now(JST)
+        
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        print(f"[ERROR] rank top command: {e}")
+        try:
+            await interaction.followup.send(f"❌ エラーが発生しました: `{e}`", ephemeral=True)
+        except:
+            pass
+
+@rank_group.command(name="status", description="自分または他ユーザーのランク（レベル）を表示します")
 async def rank(interaction: discord.Interaction, user: discord.Member = None):
     # defer() の前に重い処理を一切入れない
     try:
