@@ -2175,7 +2175,7 @@ async def process_room_purchase(interaction: discord.Interaction, room_type: str
             else:
                 overwrites = {
                     interaction.guild.default_role: discord.PermissionOverwrite(connect=True),
-                    interaction.user: discord.PermissionOverwrite(manage_channels=True, move_members=True)
+                    interaction.user: discord.PermissionOverwrite(move_members=True)
                 }
             channel = await interaction.guild.create_voice_channel(name=f"{room_type}-{interaction.user.display_name}", category=interaction.channel.category, overwrites=overwrites, user_limit=(2 if room_type=="宿" else 0))
             
