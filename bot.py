@@ -696,7 +696,7 @@ async def on_voice_state_update(member, before, after):
             if len(before.channel.members) == 0:
                 room_data = await database.get_room(before.channel.id)
                 if room_data:
-                    if room_data["room_type"] == "一時部屋":
+                    if room_data["room_type"] in ["一時部屋", "宿"]:
                         try:
                             print(f"[Auto-VC] Deleting empty room: {before.channel.name}")
                             await before.channel.delete()
