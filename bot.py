@@ -5015,6 +5015,46 @@ class InterviewerGroup(app_commands.Group):
         except Exception as e:
             await interaction.followup.send(f"❌ エラーが発生しました: {e}", ephemeral=True)
 
+async def get_thread_reaction_counts(interaction: discord.Interaction, user: discord.Member):
+    b010 = 0
+    b011 = 0
+    cfg = interaction.client.get_evaluation_config(interaction.guild_id)
+    forum_ids = cfg.get("forum_channel_ids", [])
+    
+    for fid in forum_ids:
+        ch = interaction.guild.get_channel(fid)
+        if not ch: continue
+            
+        target_threads = []
+        if hasattr(ch, "threads"):
+            for t in ch.threads:
+                if user.name in t.name or user.display_name in t.name:
+                    target_threads.append(t)
+                
+        if hasattr(ch, 'archived_threads'):
+            async for t in ch.archived_threads(limit=100):
+                if user.name in t.name or user.display_name in t.name:
+                    target_threads.append(t)
+                
+        for t in target_threads:
+            try:
+                first_msg = None
+                async for msg in t.history(limit=1, oldest_first=True):
+                    first_msg = msg
+                    break
+                
+                if first_msg and str(user.id) in first_msg.content:
+                    for r in first_msg.reactions:
+                        name = r.emoji if isinstance(r.emoji, str) else r.emoji.name
+                        if name == "b_010":
+                            b010 += r.count
+                        elif name == "b_011":
+                            b011 += r.count
+            except:
+                pass
+                
+    return b010, b011
+
 class EvaluationGroup(app_commands.Group):
     def __init__(self): super().__init__(name="評価期間", description="評価期間関連コマンド")
 
@@ -5211,14 +5251,17 @@ class EvaluatorSheetGroup(app_commands.Group):
     @app_commands.command(name="評価確認", description="指定したユーザーの評価スタンプ数を確認します")
     @app_commands.describe(user="確認するユーザー")
     async def check_eval(self, interaction: discord.Interaction, user: discord.Member):
+        if not has_evaluator_role(interaction.user) and not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("権限がありません。", ephemeral=True)
+            
         counts = await database.get_user_evaluation_counts(user.id)
         
         b_010_count = counts.get("b_010", 0)
         b_011_count = counts.get("b_011", 0)
         
         embed = discord.Embed(title=f"📊 {user.display_name} さんの評価結果", color=discord.Color.blue())
-        embed.add_field(name=":b_010:", value=f"{b_010_count} 個", inline=True)
-        embed.add_field(name=":b_011:", value=f"{b_011_count} 個", inline=True)
+        embed.add_field(name=b010_str, value=f"{b_010_count} 個", inline=True)
+        embed.add_field(name=b011_str, value=f"{b_011_count} 個", inline=True)
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
