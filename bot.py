@@ -5237,6 +5237,31 @@ class EvaluatorSheetSelectView(discord.ui.View):
 class EvaluatorSheetGroup(app_commands.Group):
     def __init__(self): super().__init__(name="評価員", description="評価員向けコマンド")
 
+    @app_commands.command(name="help", description="評価員向けコマンドとスタンプ集計の仕様について説明します")
+    async def help_command(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="🔰 評価員コマンド・スタンプ集計の仕様について",
+            description="各種評価コマンドと、権限ランクに応じたスタンプ表示制限についての説明です。",
+            color=discord.Color.blue()
+        )
+        embed.add_field(
+            name="1. /評価員 評価確認",
+            value="対象ユーザーの現在の評価スタンプ数を確認します。\n実行者の権限ランク（見習い/中級/特級など）に応じて、**閲覧できるフォーラムのスタンプ範囲が自動的に制限**されます。",
+            inline=False
+        )
+        embed.add_field(
+            name="2. /評価期間 確認",
+            value="対象ユーザーの評価期間を確認します。\n一般メンバーが自身を確認した場合は期間のみが表示され、**評価員が確認した場合はスタンプ数も合算して表示**されます（閲覧範囲は1と同じく権限に依存します）。",
+            inline=False
+        )
+        embed.add_field(
+            name="3. 【管理者向け】/管理 bot設定",
+            value="評価員ロールと対象フォーラムを3段階のランク（見習い・初級、中級・上級、特級・統括）に分けて設定できます。これにより、ランクに応じたスタンプの表示制限が機能します。",
+            inline=False
+        )
+        embed.set_footer(text="※過去にデータベースへ手動追加されたスタンプは、スレッドとは別に「過去の追加分」として表示されます。")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     @app_commands.command(name="評価シート作成", description="指定したユーザーの評価シート(スレッド)を作成します")
     @app_commands.describe(user="評価シートを作成するユーザー", intro_link="自己紹介のメッセージリンク等（任意）")
     async def create_sheet(self, interaction: discord.Interaction, user: discord.Member, intro_link: str = None):
