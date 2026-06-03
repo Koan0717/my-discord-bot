@@ -377,6 +377,7 @@ class EconomyBot(commands.Bot):
         self.tree.add_command(AdminGroup())
         self.tree.add_command(InterviewerGroup())
         self.tree.add_command(EvaluationGroup())
+        self.tree.add_command(EvaluatorSheetGroup())
         self.tree.add_command(EventGroup())
         
         await self.tree.sync()
@@ -5080,6 +5081,85 @@ class EvaluationGroup(app_commands.Group):
         period = await database.get_evaluation_period(user.id)
         end_str = format_evaluation_datetime(period['end_time'])
         await interaction.response.send_message(f"✅ {user.mention} の評価期間を {extra_days} 日延長しました。\n新しい終了予定: {end_str}", ephemeral=True)
+
+class EvaluatorSheetSelect(discord.ui.Select):
+    def __init__(self, target_user: discord.Member, forum_channels: list, intro_link: str = None):
+        self.target_user = target_user
+        self.intro_link = intro_link
+        options = []
+        for ch in forum_channels:
+            options.append(discord.SelectOption(label=f"📁 {ch.name}", value=str(ch.id)))
+        
+        super().__init__(
+            placeholder="作成するフォーラムを選択 (複数可)...",
+            min_values=1,
+            max_values=len(options),
+            options=options
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        created_links = []
+        for val in self.values:
+            ch_id = int(val)
+            ch = interaction.guild.get_channel(ch_id)
+            if not ch: continue
+            
+            thread_name = f"{self.target_user.display_name}さんの評価シート"
+            content = f"{self.target_user.mention} の評価シートです。\\n評価員: {interaction.user.mention}"
+            if self.intro_link:
+                content += f"\\n自己紹介: {self.intro_link}"
+            
+            try:
+                if isinstance(ch, discord.ForumChannel):
+                    thread_with_message = await ch.create_thread(
+                        name=thread_name,
+                        content=content
+                    )
+                    thread = thread_with_message.thread
+                else:
+                    thread = await ch.create_thread(
+                        name=thread_name,
+                        type=discord.ChannelType.public_thread
+                    )
+                    await thread.send(content)
+                created_links.append(f"• [{ch.name}]({thread.jump_url})")
+            except Exception as e:
+                created_links.append(f"• エラー ({ch.name}): {e}")
+                
+        res = "\\n".join(created_links)
+        await interaction.followup.send(f"以下の評価シートを作成しました:\\n{res}", ephemeral=True)
+
+class EvaluatorSheetSelectView(discord.ui.View):
+    def __init__(self, target_user: discord.Member, forum_channels: list, intro_link: str = None):
+        super().__init__(timeout=180)
+        self.add_item(EvaluatorSheetSelect(target_user, forum_channels, intro_link))
+
+class EvaluatorSheetGroup(app_commands.Group):
+    def __init__(self): super().__init__(name="評価員", description="評価員向けコマンド")
+
+    @app_commands.command(name="評価シート作成", description="指定したユーザーの評価シート(スレッド)を作成します")
+    @app_commands.describe(user="評価シートを作成するユーザー", intro_link="自己紹介のメッセージリンク等（任意）")
+    async def create_sheet(self, interaction: discord.Interaction, user: discord.Member, intro_link: str = None):
+        if not has_evaluator_role(interaction.user) and not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("権限がありません。", ephemeral=True)
+            
+        cfg = interaction.client.get_evaluation_config(interaction.guild_id)
+        forum_ids = cfg.get("forum_channel_ids", [])
+        if not forum_ids:
+            return await interaction.response.send_message("評価用フォーラムが設定されていません。", ephemeral=True)
+            
+        forum_channels = []
+        for fid in forum_ids:
+            ch = interaction.guild.get_channel(fid)
+            if ch:
+                forum_channels.append(ch)
+                
+        if not forum_channels:
+            return await interaction.response.send_message("有効な評価用フォーラムが見つかりません。", ephemeral=True)
+            
+        view = EvaluatorSheetSelectView(user, forum_channels, intro_link)
+        await interaction.response.send_message(f"{user.display_name} さんの評価シート作成先を選択してください:", view=view, ephemeral=True)
 
 # --- 実行 ---
 EVENTS_FILE = 'events.json'
