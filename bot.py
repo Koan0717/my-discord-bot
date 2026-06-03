@@ -10,7 +10,7 @@ import database
 import json
 
 # --- 設定 ---
-CURRENCY_NAME = "コイン"
+CURRENCY_NAME = "Rune"
 JST = datetime.timezone(datetime.timedelta(hours=9))
 
 # 獲得量の設定
@@ -5107,19 +5107,19 @@ class EvaluatorSheetSelect(discord.ui.Select):
             start_str = format_evaluation_datetime(period['start_time'])
             end_str = format_evaluation_datetime(period['end_time'])
             base_content = (
-                f"**対象者:** {self.target_user.mention}\\n"
-                f"**評価期間:** {start_str} ～ {end_str}\\n\\n"
+                f"**対象者:** {self.target_user.mention}\n"
+                f"**評価期間:** {start_str} ～ {end_str}\n\n"
             )
         else:
             base_content = (
-                f"**対象者:** {self.target_user.mention}\\n"
-                f"**評価期間:** データが見つかりませんでした。\\n\\n"
+                f"**対象者:** {self.target_user.mention}\n"
+                f"**評価期間:** データが見つかりませんでした。\n\n"
             )
             
         if self.intro_link:
-            base_content += f"**自己紹介へのリンク:**\\n{self.intro_link}"
+            base_content += f"**自己紹介へのリンク:**\n{self.intro_link}"
         else:
-            base_content += f"**自己紹介へのリンク:**\\n手動作成 (自己紹介リンクなし)"
+            base_content += f"**自己紹介へのリンク:**\n手動作成 (自己紹介リンクなし)"
             
         thread_name = f"{self.target_user.display_name}_{self.target_user.name}"
         
