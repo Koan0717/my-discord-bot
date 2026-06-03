@@ -5063,6 +5063,12 @@ class EvaluationGroup(app_commands.Group):
         embed = discord.Embed(title=f"⏳ {target.display_name} の評価期間", color=discord.Color.green())
         embed.add_field(name="開始時刻", value=start_str, inline=False)
         embed.add_field(name="終了予定", value=f"{end_str} (<t:{end_t}:R>)", inline=False)
+        
+        counts = await database.get_user_evaluation_counts(target.id)
+        b_010_count = counts.get("b_010", 0)
+        b_011_count = counts.get("b_011", 0)
+        embed.add_field(name="📊 評価結果", value=f":b_010: {b_010_count} 個\n:b_011: {b_011_count} 個", inline=False)
+        
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="延長", description="【運営・評価員専用】ユーザーの評価期間を延長します")
@@ -5178,6 +5184,33 @@ class EvaluatorSheetGroup(app_commands.Group):
             
         view = EvaluatorSheetSelectView(user, forum_channels, intro_link)
         await interaction.response.send_message(f"{user.display_name} さんの評価シート作成先を選択してください:", view=view, ephemeral=True)
+
+    @app_commands.command(name="評価追加", description="指定したユーザーの評価（結果）を追加します")
+    @app_commands.describe(user="評価するユーザー", result="評価結果のスタンプ")
+    @app_commands.choices(result=[
+        app_commands.Choice(name=":b_010:", value="b_010"),
+        app_commands.Choice(name=":b_011:", value="b_011")
+    ])
+    async def add_eval(self, interaction: discord.Interaction, user: discord.Member, result: app_commands.Choice[str]):
+        if not has_evaluator_role(interaction.user) and not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("権限がありません。", ephemeral=True)
+            
+        await database.add_user_evaluation(user.id, interaction.user.id, result.value)
+        await interaction.response.send_message(f"✅ {user.display_name} さんの評価として `:{result.value}:` を追加しました。", ephemeral=False)
+
+    @app_commands.command(name="評価確認", description="指定したユーザーの評価スタンプ数を確認します")
+    @app_commands.describe(user="確認するユーザー")
+    async def check_eval(self, interaction: discord.Interaction, user: discord.Member):
+        counts = await database.get_user_evaluation_counts(user.id)
+        
+        b_010_count = counts.get("b_010", 0)
+        b_011_count = counts.get("b_011", 0)
+        
+        embed = discord.Embed(title=f"📊 {user.display_name} さんの評価結果", color=discord.Color.blue())
+        embed.add_field(name=":b_010:", value=f"{b_010_count} 個", inline=True)
+        embed.add_field(name=":b_011:", value=f"{b_011_count} 個", inline=True)
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # --- 実行 ---
 EVENTS_FILE = 'events.json'

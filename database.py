@@ -167,6 +167,16 @@ async def setup_db():
         except Exception as e:
             print(f"[Migration] users evaluation_vc_time migration warning: {e}")
 
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS user_evaluations (
+                id SERIAL PRIMARY KEY,
+                target_user_id BIGINT,
+                evaluator_id BIGINT,
+                result TEXT,
+                created_at TIMESTAMP
+            )
+        ''')
+
 
 async def get_user(user_id: int):
     p = await get_pool()
@@ -647,5 +657,25 @@ async def add_evaluation_vc_time(user_id: int, seconds: int):
     p = await get_pool()
     async with p.acquire() as conn:
         await conn.execute('UPDATE users SET evaluation_vc_time = evaluation_vc_time + $1 WHERE user_id = $2', seconds, user_id)
+
+# --- ユーザー評価結果管理用関数 ---
+async def add_user_evaluation(target_user_id: int, evaluator_id: int, result: str):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO user_evaluations (target_user_id, evaluator_id, result, created_at)
+            VALUES ($1, $2, $3, $4)
+        ''', target_user_id, evaluator_id, result, get_now_naive())
+
+async def get_user_evaluation_counts(target_user_id: int) -> dict:
+    p = await get_pool()
+    async with p.acquire() as conn:
+        rows = await conn.fetch('''
+            SELECT result, COUNT(*) as count
+            FROM user_evaluations
+            WHERE target_user_id = $1
+            GROUP BY result
+        ''', target_user_id)
+        return {r['result']: r['count'] for r in rows}
 
 
