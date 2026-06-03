@@ -5067,7 +5067,13 @@ class EvaluationGroup(app_commands.Group):
         counts = await database.get_user_evaluation_counts(target.id)
         b_010_count = counts.get("b_010", 0)
         b_011_count = counts.get("b_011", 0)
-        embed.add_field(name="📊 評価結果", value=f":b_010: {b_010_count} 個\n:b_011: {b_011_count} 個", inline=False)
+        
+        emoji_b010 = discord.utils.get(interaction.guild.emojis, name="b_010")
+        b010_str = str(emoji_b010) if emoji_b010 else ":b_010:"
+        emoji_b011 = discord.utils.get(interaction.guild.emojis, name="b_011")
+        b011_str = str(emoji_b011) if emoji_b011 else ":b_011:"
+        
+        embed.add_field(name="📊 評価結果", value=f"{b010_str} {b_010_count} 個\n{b011_str} {b_011_count} 個", inline=False)
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -5196,7 +5202,11 @@ class EvaluatorSheetGroup(app_commands.Group):
             return await interaction.response.send_message("権限がありません。", ephemeral=True)
             
         await database.add_user_evaluation(user.id, interaction.user.id, result.value)
-        await interaction.response.send_message(f"✅ {user.display_name} さんの評価として `:{result.value}:` を追加しました。", ephemeral=False)
+        
+        emoji_obj = discord.utils.get(interaction.guild.emojis, name=result.value)
+        emoji_str = str(emoji_obj) if emoji_obj else f":{result.value}:"
+        
+        await interaction.response.send_message(f"✅ {user.display_name} さんの評価として {emoji_str} を追加しました。", ephemeral=False)
 
     @app_commands.command(name="評価確認", description="指定したユーザーの評価スタンプ数を確認します")
     @app_commands.describe(user="確認するユーザー")
