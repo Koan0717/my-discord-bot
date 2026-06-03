@@ -5100,21 +5100,39 @@ class EvaluatorSheetSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         created_links = []
+        
+        # 評価期間の取得
+        period = await database.get_evaluation_period(self.target_user.id)
+        if period:
+            start_str = format_evaluation_datetime(period['start_time'])
+            end_str = format_evaluation_datetime(period['end_time'])
+            base_content = (
+                f"**対象者:** {self.target_user.mention}\\n"
+                f"**評価期間:** {start_str} ～ {end_str}\\n\\n"
+            )
+        else:
+            base_content = (
+                f"**対象者:** {self.target_user.mention}\\n"
+                f"**評価期間:** データが見つかりませんでした。\\n\\n"
+            )
+            
+        if self.intro_link:
+            base_content += f"**自己紹介へのリンク:**\\n{self.intro_link}"
+        else:
+            base_content += f"**自己紹介へのリンク:**\\n手動作成 (自己紹介リンクなし)"
+            
+        thread_name = f"{self.target_user.display_name}_{self.target_user.name}"
+        
         for val in self.values:
             ch_id = int(val)
             ch = interaction.guild.get_channel(ch_id)
             if not ch: continue
             
-            thread_name = f"{self.target_user.display_name}さんの評価シート"
-            content = f"{self.target_user.mention} の評価シートです。\\n評価員: {interaction.user.mention}"
-            if self.intro_link:
-                content += f"\\n自己紹介: {self.intro_link}"
-            
             try:
                 if isinstance(ch, discord.ForumChannel):
                     thread_with_message = await ch.create_thread(
                         name=thread_name,
-                        content=content
+                        content=base_content
                     )
                     thread = thread_with_message.thread
                 else:
@@ -5122,7 +5140,7 @@ class EvaluatorSheetSelect(discord.ui.Select):
                         name=thread_name,
                         type=discord.ChannelType.public_thread
                     )
-                    await thread.send(content)
+                    await thread.send(base_content)
                 created_links.append(f"• [{ch.name}]({thread.jump_url})")
             except Exception as e:
                 created_links.append(f"• エラー ({ch.name}): {e}")
