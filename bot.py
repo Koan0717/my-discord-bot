@@ -123,16 +123,33 @@ def has_admin_role(user: discord.Member):
         return True
     return False
 
-def has_evaluator_role(user: discord.Member):
-    eval_role_ids = get_setting("EVALUATOR_ROLE_IDS")
-    admin_role_ids = get_setting("ADMIN_ROLE_IDS")
-    user_role_ids = [role.id for role in user.roles]
-    if any(rid in eval_role_ids or rid in admin_role_ids for rid in user_role_ids) or user.guild_permissions.administrator:
-        return True
+def get_evaluator_tier(user: discord.Member) -> int:
+    if user.guild_permissions.administrator: return 3
+    user_role_ids = [r.id for r in user.roles]
+    
+    admin_ids = get_setting("ADMIN_ROLE_IDS") or []
+    if any(rid in admin_ids for rid in user_role_ids): return 3
+    
+    tier3_ids = get_setting("EVALUATOR_TIER3_ROLE_IDS") or []
+    if any(rid in tier3_ids for rid in user_role_ids): return 3
+    
+    tier2_ids = get_setting("EVALUATOR_TIER2_ROLE_IDS") or []
+    if any(rid in tier2_ids for rid in user_role_ids): return 2
+    
+    tier1_ids = get_setting("EVALUATOR_TIER1_ROLE_IDS") or []
+    if any(rid in tier1_ids for rid in user_role_ids): return 1
+    
+    old_eval_ids = get_setting("EVALUATOR_ROLE_IDS") or []
+    if any(rid in old_eval_ids for rid in user_role_ids): return 1
+    
     user_role_names = [role.name for role in user.roles]
     if any(name in EVALUATOR_ROLE_NAMES or name in ADMIN_ROLE_NAMES for name in user_role_names):
-        return True
-    return False
+        return 1
+    
+    return 0
+
+def has_evaluator_role(user: discord.Member) -> bool:
+    return get_evaluator_tier(user) > 0
 
 def has_interviewer_role(user: discord.Member):
     interviewer_role_ids = get_setting("INTERVIEWER_ROLE_IDS")
@@ -4681,7 +4698,9 @@ class BotSetupMainSelect(discord.ui.Select):
     def __init__(self):
         options = [
             discord.SelectOption(label="👥 管理者ロール", value="ADMIN_ROLE_IDS", description="管理者のロールを設定します"),
-            discord.SelectOption(label="👥 評価員ロール", value="EVALUATOR_ROLE_IDS", description="評価員のロールを設定します"),
+            discord.SelectOption(label="👥 見習い・初級評価員", value="EVALUATOR_TIER1_ROLE_IDS", description="見習い・初級ランクの評価員ロール"),
+            discord.SelectOption(label="👥 中級・上級評価員", value="EVALUATOR_TIER2_ROLE_IDS", description="中級・上級ランクの評価員ロール"),
+            discord.SelectOption(label="👥 特級・統括評価員", value="EVALUATOR_TIER3_ROLE_IDS", description="特級・統括ランクの評価員ロール"),
             discord.SelectOption(label="👥 新規メンバーロール", value="NEW_MEMBER_ROLE_ID", description="入界後の一般メンバーロール"),
             discord.SelectOption(label="👥 入界待機者ロール", value="PENDING_MEMBER_ROLE_ID", description="面接待ちメンバーのロール"),
             discord.SelectOption(label="👥 面接官ロール", value="INTERVIEWER_ROLE_IDS", description="面接を行える権限ロール"),
@@ -4695,7 +4714,9 @@ class BotSetupMainSelect(discord.ui.Select):
             discord.SelectOption(label="📺 VC作成トリガー", value="CREATE_VC_CHANNEL_ID", description="入室すると自動VCを作る部屋"),
             discord.SelectOption(label="📺 評価時間対象カテゴリー", value="EVAL_TIME_CATEGORY_ID", description="評価時間を計測するカテゴリー"),
             discord.SelectOption(label="📺 自己紹介チャンネル", value="SELF_INTRO_CHANNEL_IDS", description="自己紹介を行う部屋（複数可）"),
-            discord.SelectOption(label="📺 評価フォーラム", value="EVALUATION_FORUM_CHANNEL_IDS", description="評価用スレッドが作られるフォーラム")
+            discord.SelectOption(label="📺 見習い・初級フォーラム", value="EVALUATION_FORUM_TIER1_IDS", description="見習い・初級用の評価フォーラム"),
+            discord.SelectOption(label="📺 中級・上級フォーラム", value="EVALUATION_FORUM_TIER2_IDS", description="中級・上級用の評価フォーラム"),
+            discord.SelectOption(label="📺 特級・統括フォーラム", value="EVALUATION_FORUM_TIER3_IDS", description="特級・統括用の評価フォーラム")
         ]
         super().__init__(placeholder="設定する項目を選択してください...", options=options, custom_id="admin_bot_setup_main_select")
 
@@ -5087,9 +5108,10 @@ class EvaluationGroup(app_commands.Group):
     @app_commands.command(name="確認", description="ユーザーの評価期間を確認します")
     async def check_period(self, interaction: discord.Interaction, user: discord.Member = None):
         target = user or interaction.user
+        is_evaluator = has_evaluator_role(interaction.user) or interaction.user.guild_permissions.administrator
         
         if target.id != interaction.user.id:
-            if not has_evaluator_role(interaction.user) and not interaction.user.guild_permissions.administrator:
+            if not is_evaluator:
                 return await interaction.response.send_message("他人の評価期間を見る権限がありません。", ephemeral=True)
                 
         period = await database.get_evaluation_period(target.id)
@@ -5104,17 +5126,24 @@ class EvaluationGroup(app_commands.Group):
         embed.add_field(name="開始時刻", value=start_str, inline=False)
         embed.add_field(name="終了予定", value=f"{end_str} (<t:{end_t}:R>)", inline=False)
         
-        counts = await database.get_user_evaluation_counts(target.id)
-        b_010_count = counts.get("b_010", 0)
-        b_011_count = counts.get("b_011", 0)
-        
-        emoji_b010 = discord.utils.get(interaction.guild.emojis, name="b_010")
-        b010_str = str(emoji_b010) if emoji_b010 else ":b_010:"
-        emoji_b011 = discord.utils.get(interaction.guild.emojis, name="b_011")
-        b011_str = str(emoji_b011) if emoji_b011 else ":b_011:"
-        
-        embed.add_field(name="📊 評価結果", value=f"{b010_str} {b_010_count} 個\n{b011_str} {b_011_count} 個", inline=False)
-        
+        if is_evaluator:
+            counts = await database.get_user_evaluation_counts(target.id)
+            db_b010 = counts.get("b_010", 0)
+            db_b011 = counts.get("b_011", 0)
+            
+            thread_b010, thread_b011 = await get_thread_reaction_counts(interaction, target)
+            b_010_count = db_b010 + thread_b010
+            b_011_count = db_b011 + thread_b011
+            
+            emoji_b010 = discord.utils.get(interaction.guild.emojis, name="b_010")
+            b010_str = str(emoji_b010) if emoji_b010 else ":b_010:"
+            emoji_b011 = discord.utils.get(interaction.guild.emojis, name="b_011")
+            b011_str = str(emoji_b011) if emoji_b011 else ":b_011:"
+            
+            embed.add_field(name="📊 スレッド評価（合算）", value=f"{b010_str} {thread_b010} 個\n{b011_str} {thread_b011} 個", inline=False)
+            if db_b010 > 0 or db_b011 > 0:
+                embed.add_field(name="💾 過去の追加分（DB）", value=f"{b010_str} {db_b010} 個\n{b011_str} {db_b011} 個", inline=False)
+            
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="延長", description="【運営・評価員専用】ユーザーの評価期間を延長します")
@@ -5231,23 +5260,6 @@ class EvaluatorSheetGroup(app_commands.Group):
         view = EvaluatorSheetSelectView(user, forum_channels, intro_link)
         await interaction.response.send_message(f"{user.display_name} さんの評価シート作成先を選択してください:", view=view, ephemeral=True)
 
-    @app_commands.command(name="評価追加", description="指定したユーザーの評価（結果）を追加します")
-    @app_commands.describe(user="評価するユーザー", result="評価結果のスタンプ")
-    @app_commands.choices(result=[
-        app_commands.Choice(name=":b_010:", value="b_010"),
-        app_commands.Choice(name=":b_011:", value="b_011")
-    ])
-    async def add_eval(self, interaction: discord.Interaction, user: discord.Member, result: app_commands.Choice[str]):
-        if not has_evaluator_role(interaction.user) and not interaction.user.guild_permissions.administrator:
-            return await interaction.response.send_message("権限がありません。", ephemeral=True)
-            
-        await database.add_user_evaluation(user.id, interaction.user.id, result.value)
-        
-        emoji_obj = discord.utils.get(interaction.guild.emojis, name=result.value)
-        emoji_str = str(emoji_obj) if emoji_obj else f":{result.value}:"
-        
-        await interaction.response.send_message(f"✅ {user.display_name} さんの評価として {emoji_str} を追加しました。", ephemeral=False)
-
     @app_commands.command(name="評価確認", description="指定したユーザーの評価スタンプ数を確認します")
     @app_commands.describe(user="確認するユーザー")
     async def check_eval(self, interaction: discord.Interaction, user: discord.Member):
@@ -5255,13 +5267,22 @@ class EvaluatorSheetGroup(app_commands.Group):
             return await interaction.response.send_message("権限がありません。", ephemeral=True)
             
         counts = await database.get_user_evaluation_counts(user.id)
+        db_b010 = counts.get("b_010", 0)
+        db_b011 = counts.get("b_011", 0)
         
-        b_010_count = counts.get("b_010", 0)
-        b_011_count = counts.get("b_011", 0)
+        thread_b010, thread_b011 = await get_thread_reaction_counts(interaction, user)
+        b_010_count = db_b010 + thread_b010
+        b_011_count = db_b011 + thread_b011
         
+        emoji_b010 = discord.utils.get(interaction.guild.emojis, name="b_010")
+        b010_str = str(emoji_b010) if emoji_b010 else ":b_010:"
+        emoji_b011 = discord.utils.get(interaction.guild.emojis, name="b_011")
+        b011_str = str(emoji_b011) if emoji_b011 else ":b_011:"
+
         embed = discord.Embed(title=f"📊 {user.display_name} さんの評価結果", color=discord.Color.blue())
-        embed.add_field(name=b010_str, value=f"{b_010_count} 個", inline=True)
-        embed.add_field(name=b011_str, value=f"{b_011_count} 個", inline=True)
+        embed.add_field(name="📊 スレッド評価（合算）", value=f"{b010_str} {thread_b010} 個\n{b011_str} {thread_b011} 個", inline=False)
+        if db_b010 > 0 or db_b011 > 0:
+            embed.add_field(name="💾 過去の追加分（DB）", value=f"{b010_str} {db_b010} 個\n{b011_str} {db_b011} 個", inline=False)
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
