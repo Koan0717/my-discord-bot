@@ -4740,7 +4740,9 @@ class BotSetupMainView(discord.ui.View):
         )
         roles_text = (
             f"• 管理者: {format_setting_status(guild, 'ADMIN_ROLE_IDS')}\n"
-            f"• 評価員: {format_setting_status(guild, 'EVALUATOR_ROLE_IDS')}\n"
+            f"• 見習い・初級評価員: {format_setting_status(guild, 'EVALUATOR_TIER1_ROLE_IDS')}\n"
+            f"• 中級・上級評価員: {format_setting_status(guild, 'EVALUATOR_TIER2_ROLE_IDS')}\n"
+            f"• 特級・統括評価員: {format_setting_status(guild, 'EVALUATOR_TIER3_ROLE_IDS')}\n"
             f"• 新規メンバー: {format_setting_status(guild, 'NEW_MEMBER_ROLE_ID')}\n"
             f"• 入界待機者: {format_setting_status(guild, 'PENDING_MEMBER_ROLE_ID')}\n"
             f"• 面接官: {format_setting_status(guild, 'INTERVIEWER_ROLE_IDS')}\n"
@@ -4758,7 +4760,9 @@ class BotSetupMainView(discord.ui.View):
             f"• VC作成トリガー: {format_setting_status(guild, 'CREATE_VC_CHANNEL_ID')}\n"
             f"• 評価時間対象カテゴリ: {format_setting_status(guild, 'EVAL_TIME_CATEGORY_ID')}\n"
             f"• 自己紹介部屋: {format_setting_status(guild, 'SELF_INTRO_CHANNEL_IDS')}\n"
-            f"• 評価フォーラム: {format_setting_status(guild, 'EVALUATION_FORUM_CHANNEL_IDS')}"
+            f"• 見習い・初級フォーラム: {format_setting_status(guild, 'EVALUATION_FORUM_TIER1_IDS')}\n"
+            f"• 中級・上級フォーラム: {format_setting_status(guild, 'EVALUATION_FORUM_TIER2_IDS')}\n"
+            f"• 特級・統括フォーラム: {format_setting_status(guild, 'EVALUATION_FORUM_TIER3_IDS')}"
         )
         embed.add_field(name="📺 チャンネル・カテゴリー設定", value=channels_text, inline=False)
         return embed
@@ -5039,8 +5043,15 @@ class InterviewerGroup(app_commands.Group):
 async def get_thread_reaction_counts(interaction: discord.Interaction, user: discord.Member):
     b010 = 0
     b011 = 0
-    cfg = interaction.client.get_evaluation_config(interaction.guild_id)
-    forum_ids = cfg.get("forum_channel_ids", [])
+    tier = get_evaluator_tier(interaction.user)
+    forum_ids = set()
+    if tier >= 1:
+        if get_setting("EVALUATION_FORUM_TIER1_IDS"): forum_ids.update(get_setting("EVALUATION_FORUM_TIER1_IDS"))
+        if get_setting("EVALUATION_FORUM_CHANNEL_IDS"): forum_ids.update(get_setting("EVALUATION_FORUM_CHANNEL_IDS"))
+    if tier >= 2:
+        if get_setting("EVALUATION_FORUM_TIER2_IDS"): forum_ids.update(get_setting("EVALUATION_FORUM_TIER2_IDS"))
+    if tier >= 3:
+        if get_setting("EVALUATION_FORUM_TIER3_IDS"): forum_ids.update(get_setting("EVALUATION_FORUM_TIER3_IDS"))
     
     for fid in forum_ids:
         ch = interaction.guild.get_channel(fid)
