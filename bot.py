@@ -984,25 +984,53 @@ async def balance(interaction: discord.Interaction, user: discord.Member = None)
     else:
         await interaction.response.send_message(f"{target_user.display_name} の所持金は **{bal} {CURRENCY_NAME}** です。", ephemeral=True)
 
-@bot.tree.command(name="pay", description="他のユーザーに通貨を送ります")
-async def pay(interaction: discord.Interaction, target: discord.Member, amount: int):
+@bot.tree.command(name="pay", description="他のユーザーに通貨を送ります（最大5人まで同時選択可能）")
+@app_commands.describe(
+    target1="送金先1",
+    amount="1人あたりの金額",
+    target2="送金先2（任意）",
+    target3="送金先3（任意）",
+    target4="送金先4（任意）",
+    target5="送金先5（任意）"
+)
+async def pay(
+    interaction: discord.Interaction, 
+    target1: discord.Member, 
+    amount: int, 
+    target2: discord.Member = None,
+    target3: discord.Member = None,
+    target4: discord.Member = None,
+    target5: discord.Member = None
+):
     if amount <= 0:
         await interaction.response.send_message("1以上の金額を指定してください。", ephemeral=True)
         return
-    if target.id == interaction.user.id:
-        await interaction.response.send_message("自分自身には送金できません。", ephemeral=True)
-        return
-    if target.bot:
-        await interaction.response.send_message("Botには送金できません。", ephemeral=True)
-        return
+        
+    targets = [t for t in [target1, target2, target3, target4, target5] if t is not None]
+    valid_targets = []
+    
+    for t in targets:
+        if t.id == interaction.user.id:
+            await interaction.response.send_message("自分自身は送金先に含めることができません。", ephemeral=True)
+            return
+        if t.bot:
+            await interaction.response.send_message("Botは送金先に含めることができません。", ephemeral=True)
+            return
+        if t not in valid_targets:
+            valid_targets.append(t)
+            
+    total_amount = amount * len(valid_targets)
+    
     # defer() でインタラクションを延長（DBアクセスが3秒を超えても Unknown Interaction にならないように）
     await interaction.response.defer()
-    success = await database.remove_balance(interaction.user.id, amount)
+    success = await database.remove_balance(interaction.user.id, total_amount)
     if not success:
-        await interaction.followup.send("残高が不足しています。", ephemeral=True)
+        await interaction.followup.send(f"残高が不足しています。（合計 {total_amount} {CURRENCY_NAME} 必要です）", ephemeral=True)
         return
-    await database.add_balance(target.id, amount)
-    await interaction.followup.send(f"{target.mention} に **{amount} {CURRENCY_NAME}** を送金しました！")
+        
+    for t in valid_targets:
+        await database.add_balance(t.id, amount)
+        await interaction.followup.send(f"{t.mention} に **{amount} {CURRENCY_NAME}** を送金しました！")
 
 rank_group = app_commands.Group(name="rank", description="ランク（レベル）関連のコマンド")
 bot.tree.add_command(rank_group)
@@ -4919,11 +4947,37 @@ class AdminGroup(app_commands.Group):
             # 何も指定されていない場合
             await interaction.followup.send("❌ エラー: ユーザーを指定するか、『全プレイヤー』に『はい』を選択してください。", ephemeral=True)
 
-    @app_commands.command(name="通貨付与", description="指定ユーザーに通貨を付与")
+    @app_commands.command(name="通貨付与", description="指定ユーザーに通貨を付与（最大5人まで）")
+    @app_commands.describe(
+        target1="付与先1",
+        amount="1人あたりの金額",
+        target2="付与先2（任意）",
+        target3="付与先3（任意）",
+        target4="付与先4（任意）",
+        target5="付与先5（任意）"
+    )
     @is_admin()
-    async def give(self, it, target: discord.Member, amount: int):
-        await database.add_balance(target.id, amount)
-        await it.response.send_message(f"✅ {target.mention} に {amount} {CURRENCY_NAME} 付与しました。")
+    async def give(
+        self, 
+        it: discord.Interaction, 
+        target1: discord.Member, 
+        amount: int,
+        target2: discord.Member = None,
+        target3: discord.Member = None,
+        target4: discord.Member = None,
+        target5: discord.Member = None
+    ):
+        targets = [t for t in [target1, target2, target3, target4, target5] if t is not None]
+        valid_targets = []
+        for t in targets:
+            if t not in valid_targets:
+                valid_targets.append(t)
+                
+        await it.response.defer()
+        
+        for t in valid_targets:
+            await database.add_balance(t.id, amount)
+            await it.followup.send(f"✅ {t.mention} に {amount} {CURRENCY_NAME} 付与しました。")
 
     @app_commands.command(name="通貨没収", description="指定ユーザーから通貨を没収")
     @is_admin()
