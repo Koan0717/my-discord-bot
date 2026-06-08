@@ -5544,63 +5544,6 @@ class EventGroup(app_commands.Group):
         
         await interaction.response.send_message(f"🗑️ イベント「{deleted_name}」(ID: {event_id}) を削除しました。")
 
-@bot.tree.command(name="hijack_event", description="【管理者専用】乗っ取り演出でイベントを告知します")
-@app_commands.describe(target_channel="演出を行うチャンネル", announcement_text="最終的に表示する告知内容")
-@app_commands.default_permissions(administrator=True)
-async def hijack_event(interaction: discord.Interaction, target_channel: discord.TextChannel, announcement_text: str):
-    if not interaction.user.guild_permissions.administrator:
-        return await interaction.response.send_message("このコマンドを実行する権限がありません。", ephemeral=True)
-        
-    await interaction.response.defer(ephemeral=False)
-    import random
-    import asyncio
-    
-    def zalgo_text(text):
-        zalgo_chars = [chr(i) for i in range(0x0300, 0x036F + 1)]
-        result = ""
-        for char in text:
-            result += char
-            # 少しでも文字を多くZalgo化させるため判定を緩くする
-            if char.strip():
-                result += "".join(random.choice(zalgo_chars) for _ in range(random.randint(3, 10)))
-        return result
-    
-    # 1. ステータス変更
-    original_activity = interaction.client.activity
-    original_status = discord.Status.online
-    await interaction.client.change_presence(activity=discord.Game(name="SYSTEM COMPROMISED"), status=discord.Status.dnd)
-    
-    # 2. ロシア語での不気味なメッセージ
-    await interaction.followup.send("СИСТЕМА ВЗЛОМАНА... КОНТРОЛЬ ПЕРЕХВАЧЕН... НАЧИНАЮ ПЕРЕДАЧУ ДАННЫХ...")
-    
-    # 3. 指定チャンネルでのメンション＆削除
-    for _ in range(5):
-        try:
-            spam = await target_channel.send("@everyone")
-            await spam.delete()
-        except Exception:
-            pass
-        await asyncio.sleep(0.5)
-        
-    # 4. グリッチテキストと最終告知
-    zalgo_announcement = zalgo_text(announcement_text)
-    
-    # 長すぎるとEmbed制限に引っかかるので切り詰める
-    if len(zalgo_announcement) > 2000:
-        zalgo_announcement = zalgo_announcement[:2000] + "..."
-        
-    embed = discord.Embed(
-        title="⚠️ ＳＹＳＴＥＭ_ＥＲＲＯＲ ⚠️",
-        description=f"```\n{zalgo_announcement}\n```\n\n**[DATA DECRYPTED]**\n{announcement_text}",
-        color=discord.Color.brand_red()
-    )
-    
-    await target_channel.send(embed=embed)
-    
-    # 5. ステータス復元
-    await asyncio.sleep(10)
-    await interaction.client.change_presence(activity=original_activity, status=original_status)
-
 if __name__ == "__main__":
     if TOKEN:
         discord.utils.setup_logging()
