@@ -5695,6 +5695,14 @@ class ReactionRoleAdminView(discord.ui.View):
             return
             
         emoji_str = str(payload.emoji)
+        
+        # Bot自身がリアクションをつけ、運営のリアクションを消す（ユーザーが押しやすくするため）
+        try:
+            await self.target_message.remove_reaction(payload.emoji, interaction.user)
+            await self.target_message.add_reaction(payload.emoji)
+        except Exception:
+            pass
+
         await database.add_reaction_role(self.target_message.id, emoji_str, selected_role.id)
         await interaction.followup.send(f"✅ 追加完了！\\n絵文字 {emoji_str} にロール {selected_role.mention} を紐付けました！\\n続けて別のロールを設定する場合は、上のメニューから再度選択してください。", ephemeral=True)
 
