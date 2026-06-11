@@ -1034,14 +1034,19 @@ async def balance(interaction: discord.Interaction, user: discord.Member = None)
     else:
         await interaction.response.send_message(f"{target_user.display_name} の所持金は **{bal} {CURRENCY_NAME}** です。", ephemeral=True)
 
-@bot.tree.command(name="pay", description="他のユーザーに通貨を送ります（最大5人まで同時選択可能）")
+@bot.tree.command(name="pay", description="他のユーザーに通貨を送ります（最大10人まで同時選択可能）")
 @app_commands.describe(
     target1="送金先1",
     amount="1人あたりの金額",
     target2="送金先2（任意）",
     target3="送金先3（任意）",
     target4="送金先4（任意）",
-    target5="送金先5（任意）"
+    target5="送金先5（任意）",
+    target6="送金先6（任意）",
+    target7="送金先7（任意）",
+    target8="送金先8（任意）",
+    target9="送金先9（任意）",
+    target10="送金先10（任意）"
 )
 async def pay(
     interaction: discord.Interaction, 
@@ -1050,13 +1055,18 @@ async def pay(
     target2: discord.Member = None,
     target3: discord.Member = None,
     target4: discord.Member = None,
-    target5: discord.Member = None
+    target5: discord.Member = None,
+    target6: discord.Member = None,
+    target7: discord.Member = None,
+    target8: discord.Member = None,
+    target9: discord.Member = None,
+    target10: discord.Member = None
 ):
     if amount <= 0:
         await interaction.response.send_message("1以上の金額を指定してください。", ephemeral=True)
         return
         
-    targets = [t for t in [target1, target2, target3, target4, target5] if t is not None]
+    targets = [t for t in [target1, target2, target3, target4, target5, target6, target7, target8, target9, target10] if t is not None]
     valid_targets = []
     
     for t in targets:
@@ -5000,14 +5010,19 @@ class AdminGroup(app_commands.Group):
             # 何も指定されていない場合
             await interaction.followup.send("❌ エラー: ユーザーを指定するか、『全プレイヤー』に『はい』を選択してください。", ephemeral=True)
 
-    @app_commands.command(name="通貨付与", description="指定ユーザーに通貨を付与（最大5人まで）")
+    @app_commands.command(name="通貨付与", description="指定ユーザーに通貨を付与（最大10人まで）")
     @app_commands.describe(
         target1="付与先1",
         amount="1人あたりの金額",
         target2="付与先2（任意）",
         target3="付与先3（任意）",
         target4="付与先4（任意）",
-        target5="付与先5（任意）"
+        target5="付与先5（任意）",
+        target6="付与先6（任意）",
+        target7="付与先7（任意）",
+        target8="付与先8（任意）",
+        target9="付与先9（任意）",
+        target10="付与先10（任意）"
     )
     @is_admin()
     async def give(
@@ -5018,9 +5033,14 @@ class AdminGroup(app_commands.Group):
         target2: discord.Member = None,
         target3: discord.Member = None,
         target4: discord.Member = None,
-        target5: discord.Member = None
+        target5: discord.Member = None,
+        target6: discord.Member = None,
+        target7: discord.Member = None,
+        target8: discord.Member = None,
+        target9: discord.Member = None,
+        target10: discord.Member = None
     ):
-        targets = [t for t in [target1, target2, target3, target4, target5] if t is not None]
+        targets = [t for t in [target1, target2, target3, target4, target5, target6, target7, target8, target9, target10] if t is not None]
         valid_targets = []
         for t in targets:
             if t not in valid_targets:
