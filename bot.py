@@ -3901,7 +3901,8 @@ class RemoveLogSettingSelect(discord.ui.Select):
             "message_edit": "メッセージ編集",
             "message_delete": "メッセージ削除",
             "vc_join_leave": "VC参加・退出",
-            "member_join_leave": "メンバー入退"
+            "member_join_leave": "メンバー入退",
+            "economy": "通貨・経済"
         }
         for l_type, ch_id in settings.items():
             ch = guild.get_channel(ch_id)
@@ -3958,7 +3959,8 @@ async def update_log_settings_config_view(interaction: discord.Interaction):
         "message_edit": "📝 メッセージ編集",
         "message_delete": "🗑️ メッセージ削除",
         "vc_join_leave": "🎙️ VC参加・退出",
-        "member_join_leave": "👥 メンバー入退"
+        "member_join_leave": "👥 メンバー入退",
+        "economy": "💰 通貨・経済"
     }
     
     settings_str = ""
@@ -4012,7 +4014,8 @@ class ManageLogSettingsButton(discord.ui.Button):
             "message_edit": "📝 メッセージ編集",
             "message_delete": "🗑️ メッセージ削除",
             "vc_join_leave": "🎙️ VC参加・退出",
-            "member_join_leave": "👥 メンバー入退"
+            "member_join_leave": "👥 メンバー入退",
+            "economy": "💰 通貨・経済"
         }
         
         settings_str = ""
