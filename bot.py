@@ -8,6 +8,7 @@ import asyncio
 from dotenv import load_dotenv
 import database
 import json
+import re
 
 # --- 設定 ---
 CURRENCY_NAME = "Rune"
@@ -5186,6 +5187,65 @@ class InterviewerGroup(app_commands.Group):
             await interaction.followup.send(embed=embed)
         except Exception as e:
             await interaction.followup.send(f"❌ {user.display_name} の手続き中にエラーが発生しました: {e}", ephemeral=True)
+
+    @app_commands.command(name="未発行者一括付与", description="過去のログから未発行のメンバーを抽出し、初期発行を一括で行います")
+    @app_commands.describe(log_channel_id="ログを参照するチャンネルID（デフォルトは指定のチャンネル）")
+    async def batch_initial_issue(self, interaction: discord.Interaction, log_channel_id: str = "1506457200149795006"):
+        if not has_interviewer_role(interaction.user) and not has_admin_role(interaction.user) and not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("権限がありません。", ephemeral=True)
+            
+        await interaction.response.defer(ephemeral=False)
+        try:
+            target_channel_id = int(log_channel_id)
+            channel = interaction.guild.get_channel(target_channel_id)
+            if not channel:
+                return await interaction.followup.send("エラー：指定されたチャンネルが見つかりません。")
+
+            issued_user_ids = set()
+            give_pattern = re.compile(r"✅\s*<@!?(\d+)>\s*に\s*([0-9,]+)\s*Rune\s*付与しました")
+            issue_pattern = re.compile(r"✅\s*<@!?(\d+)>\s*の初期発行を完了しました")
+
+            async for message in channel.history(limit=None, oldest_first=True):
+                if message.author.id != interaction.client.user.id: continue
+                content = message.content or ""
+                if message.embeds:
+                    for embed in message.embeds:
+                        if embed.description: content += "\n" + embed.description
+
+                match_give = give_pattern.search(content)
+                if match_give:
+                    user_id = int(match_give.group(1))
+                    amount = int(match_give.group(2).replace(",", ""))
+                    if amount >= 30000:
+                        issued_user_ids.add(user_id)
+                match_issue = issue_pattern.search(content)
+                if match_issue:
+                    user_id = int(match_issue.group(1))
+                    issued_user_ids.add(user_id)
+
+            new_issue_count = 0
+            already_issued_count = 0
+            for member in interaction.guild.members:
+                if member.bot: continue
+                if member.id in issued_user_ids:
+                    await database.set_initial_issued(member.id)
+                    already_issued_count += 1
+                else:
+                    user_data = await database.get_user(member.id)
+                    if user_data["initial_issued"]:
+                        already_issued_count += 1
+                        continue
+                    
+                    await database.add_balance(member.id, INITIAL_COINS)
+                    await database.set_initial_issued(member.id)
+                    new_issue_count += 1
+
+            embed = discord.Embed(title="✨ 一括初期発行 完了", color=discord.Color.green())
+            embed.add_field(name="新規発行", value=f"{new_issue_count} 名", inline=True)
+            embed.add_field(name="発行済み確認", value=f"{already_issued_count} 名", inline=True)
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            await interaction.followup.send(f"エラーが発生しました: {e}")
 
     @app_commands.command(name="チャット削除", description="現在のチャンネルのチャット履歴を削除します（最大100件）")
     async def clear_chat(self, interaction: discord.Interaction, amount: int = 100):
