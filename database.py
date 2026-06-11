@@ -34,7 +34,8 @@ async def setup_db():
                 tc_xp INTEGER DEFAULT 0,
                 tc_level INTEGER DEFAULT 1,
                 vc_xp INTEGER DEFAULT 0,
-                vc_level INTEGER DEFAULT 1
+                vc_level INTEGER DEFAULT 1,
+                initial_issued BOOLEAN DEFAULT FALSE
             )
         ''')
         await conn.execute('''
@@ -74,6 +75,11 @@ async def setup_db():
             await conn.execute('ALTER TABLE inquiry_panels ADD COLUMN IF NOT EXISTS mention_role_ids BIGINT[]')
         except Exception as e:
             print(f"[Migration] inquiry_panels migration warning: {e}")
+
+        try:
+            await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS initial_issued BOOLEAN DEFAULT FALSE')
+        except Exception as e:
+            print(f"[Migration] users initial_issued migration warning: {e}")
 
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS level_role_rewards (
@@ -189,7 +195,7 @@ async def setup_db():
 async def get_user(user_id: int):
     p = await get_pool()
     async with p.acquire() as conn:
-        row = await conn.fetchrow('SELECT balance, chinchiro_count, chinchiro_last_date, tc_xp, tc_level, vc_xp, vc_level, evaluation_vc_time FROM users WHERE user_id = $1', user_id)
+        row = await conn.fetchrow('SELECT balance, chinchiro_count, chinchiro_last_date, tc_xp, tc_level, vc_xp, vc_level, evaluation_vc_time, initial_issued FROM users WHERE user_id = $1', user_id)
         if row:
             return {
                 "balance": row['balance'], 
@@ -199,11 +205,12 @@ async def get_user(user_id: int):
                 "tc_level": row['tc_level'],
                 "vc_xp": row['vc_xp'],
                 "vc_level": row['vc_level'],
-                "evaluation_vc_time": row['evaluation_vc_time']
+                "evaluation_vc_time": row['evaluation_vc_time'],
+                "initial_issued": row['initial_issued']
             }
         else:
-            await conn.execute('INSERT INTO users (user_id, balance) VALUES ($1, 0) ON CONFLICT (user_id) DO NOTHING', user_id)
-            return {"balance": 0, "chinchiro_count": 0, "chinchiro_last_date": None, "tc_xp": 0, "tc_level": 1, "vc_xp": 0, "vc_level": 1, "evaluation_vc_time": 0}
+            await conn.execute('INSERT INTO users (user_id, balance, initial_issued) VALUES ($1, 0, FALSE) ON CONFLICT (user_id) DO NOTHING', user_id)
+            return {"balance": 0, "chinchiro_count": 0, "chinchiro_last_date": None, "tc_xp": 0, "tc_level": 1, "vc_xp": 0, "vc_level": 1, "evaluation_vc_time": 0, "initial_issued": False}
 
 async def get_balance(user_id: int) -> int:
     user = await get_user(user_id)
@@ -225,6 +232,15 @@ async def remove_balance(user_id: int, amount: int) -> bool:
         await conn.execute('UPDATE users SET balance = balance - $1 WHERE user_id = $2', amount, user_id)
     return True
 
+async def set_initial_issued(user_id: int):
+    await get_user(user_id)
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('UPDATE users SET initial_issued = TRUE WHERE user_id = $1', user_id)
+
+async def check_initial_issued(user_id: int) -> bool:
+    user = await get_user(user_id)
+    return user["initial_issued"]
 
 
 async def reset_gambling_count(user_id: int, date_str: str):

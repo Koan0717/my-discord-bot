@@ -1454,6 +1454,7 @@ class InterviewNicknameModal(discord.ui.Modal, title='入界手続き：名前�
             if pending_role and pending_role in interaction.user.roles:
                 await interaction.user.remove_roles(pending_role)
             await database.add_balance(interaction.user.id, INITIAL_COINS)
+            await database.set_initial_issued(interaction.user.id)
             await interaction.followup.send(f"✅ 完了！名前を「{self.name_input.value}」にし、{INITIAL_COINS} {CURRENCY_NAME} を発行しました。", ephemeral=True)
         except: await interaction.followup.send("エラー: 権限不足です。Botのロール順位を確認してください。", ephemeral=True)
 
@@ -5146,6 +5147,7 @@ class InterviewerGroup(app_commands.Group):
                 await member.add_roles(new_role)
                 await member.remove_roles(pending_role)
                 await database.add_balance(member.id, INITIAL_COINS)
+                await database.set_initial_issued(member.id)
                 results.append(f"✅ {member.mention} -> **{desired_name}**")
             except Exception as e:
                 results.append(f"❌ {member.display_name} -> 権限エラー等")
@@ -5174,6 +5176,7 @@ class InterviewerGroup(app_commands.Group):
                 await user.add_roles(new_role)
                 
             await database.add_balance(user.id, INITIAL_COINS)
+            await database.set_initial_issued(user.id)
             
             embed = discord.Embed(
                 title="✨ 手動入界手続き完了", 
