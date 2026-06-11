@@ -5133,6 +5133,37 @@ class InterviewerGroup(app_commands.Group):
         embed = discord.Embed(title="✨ 入界手続き一括実行結果", description="\n".join(results), color=discord.Color.green())
         await interaction.followup.send(embed=embed)
 
+    @app_commands.command(name="初期発行", description="指定ユーザーの手動入界手続き（初期発行）を行います")
+    @app_commands.describe(user="対象ユーザー")
+    async def manual_issue(self, interaction: discord.Interaction, user: discord.Member):
+        if not has_interviewer_role(interaction.user) and not has_admin_role(interaction.user) and not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("権限がありません。", ephemeral=True)
+            
+        await interaction.response.defer(ephemeral=False)
+        
+        pending_role = get_role_by_setting(interaction.guild, "PENDING_MEMBER_ROLE_ID", PENDING_MEMBER_ROLE_NAME)
+        new_role = get_role_by_setting(interaction.guild, "NEW_MEMBER_ROLE_ID", NEW_MEMBER_ROLE_NAME)
+        
+        if not pending_role or not new_role:
+            return await interaction.followup.send("エラー：ロールの設定が見つかりません。", ephemeral=True)
+            
+        try:
+            if pending_role in user.roles:
+                await user.remove_roles(pending_role)
+            if new_role not in user.roles:
+                await user.add_roles(new_role)
+                
+            await database.add_balance(user.id, INITIAL_COINS)
+            
+            embed = discord.Embed(
+                title="✨ 手動入界手続き完了", 
+                description=f"✅ {user.mention} の初期発行を完了しました。\n（ロールの付与・剥奪、初期通貨の付与）", 
+                color=discord.Color.green()
+            )
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            await interaction.followup.send(f"❌ {user.display_name} の手続き中にエラーが発生しました: {e}", ephemeral=True)
+
     @app_commands.command(name="チャット削除", description="現在のチャンネルのチャット履歴を削除します（最大100件）")
     async def clear_chat(self, interaction: discord.Interaction, amount: int = 100):
         if not has_interviewer_role(interaction.user) and not has_admin_role(interaction.user) and not interaction.user.guild_permissions.administrator:
