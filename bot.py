@@ -296,6 +296,7 @@ class EconomyBot(commands.Bot):
         self.auto_vc_triggers = set()
         self.evaluation_settings = {}  # {guild_id: {"forum_channel_ids": set, "self_intro_channel_ids": set}}
         self.rank_settings = {}  # {guild_id: {"whitelist": set, "blacklist": set, "categories": set}}
+        self.spam_tracker = {}  # {user_id: {"last_content": str, "content_count": int, "everyone_count": int, "last_time": datetime}}
 
 
     def get_evaluation_config(self, guild_id: int) -> dict:
@@ -568,6 +569,55 @@ async def on_message(message):
     
     user_id = message.author.id
     now = datetime.datetime.now(JST)
+
+    # 荒らし対策: 連続同じメッセージ、連続@everyone
+    if isinstance(message.author, discord.Member):
+        user_tracker = bot.spam_tracker.setdefault(user_id, {
+            "last_content": None,
+            "content_count": 0,
+            "everyone_count": 0,
+            "last_time": now
+        })
+
+        # 60秒以上経過していればリセット
+        if (now - user_tracker["last_time"]).total_seconds() > 60:
+            user_tracker["content_count"] = 0
+            user_tracker["everyone_count"] = 0
+
+        user_tracker["last_time"] = now
+
+        timeout_reason = None
+
+        # 同じメッセージの連続検知 (内容が存在する場合)
+        if message.content and message.content == user_tracker["last_content"]:
+            user_tracker["content_count"] += 1
+            if user_tracker["content_count"] >= 3:
+                timeout_reason = "連続で同じメッセージを送信したため"
+        else:
+            user_tracker["last_content"] = message.content
+            user_tracker["content_count"] = 1
+
+        # @everyone or @here の連続検知
+        if message.mention_everyone:
+            user_tracker["everyone_count"] += 1
+            if user_tracker["everyone_count"] >= 3:
+                timeout_reason = "連続で@everyoneメンションを送信したため"
+        else:
+            user_tracker["everyone_count"] = 0
+
+        if timeout_reason:
+            try:
+                # 10分間のタイムアウト
+                timeout_duration = datetime.timedelta(minutes=10)
+                await message.author.timeout(timeout_duration, reason=timeout_reason)
+                await message.channel.send(f"🚨 {message.author.mention} がスパム行為（{timeout_reason}）によりタイムアウトされました。")
+                
+                # リセット
+                user_tracker["content_count"] = 0
+                user_tracker["everyone_count"] = 0
+                return # スパムなら以降の処理をしない
+            except Exception as e:
+                print(f"[ERROR] Timeout failed for {message.author.display_name}: {e}")
 
     # 1. 通貨報酬の判定 (廃止済み)
     # 2. TC経験値の判定
@@ -2948,7 +2998,8 @@ class PanelSelect(discord.ui.Select):
             discord.SelectOption(label="入界手続き", description="新規メンバーの入界手続きパネルを設置します", emoji="📝", value="interview"),
             discord.SelectOption(label="お問い合わせ", description="お問い合わせ作成パネルを設置します", emoji="✉️", value="inquiry"),
             discord.SelectOption(label="匿名チャット", description="匿名チャットのパネルを設置します", emoji="💬", value="anonymous_chat"),
-            discord.SelectOption(label="カスタムチケット", description="任意のタイトル・説明文・担当ロールを指定したチケットパネルを設置します", emoji="🎫", value="custom_ticket")
+            discord.SelectOption(label="カスタムチケット", description="任意のタイトル・説明文・担当ロールを指定したチケットパネルを設置します", emoji="🎫", value="custom_ticket"),
+            discord.SelectOption(label="任意ロール", description="任意のロールをリアクションで付与するパネルを設置します", emoji="🎭", value="custom_role_panel")
         ]
         super().__init__(placeholder="設置するパネルを選択してください...", min_values=1, max_values=1, options=options, custom_id="admin_panel_setup_select")
 
@@ -3124,6 +3175,8 @@ class PanelSelect(discord.ui.Select):
             await interaction.response.send_message(embed=embed, view=AnonymousChatSetupView(), ephemeral=True)
         elif val == "custom_ticket":
             await interaction.response.send_modal(CustomTicketSetupModal())
+        elif val == "custom_role_panel":
+            await interaction.response.send_modal(CustomRolePanelSetupModal())
 
 # --- VC作成トリガー管理パネル用UI ---
 
@@ -5543,6 +5596,113 @@ class EventGroup(app_commands.Group):
         save_events(events)
         
         await interaction.response.send_message(f"🗑️ イベント「{deleted_name}」(ID: {event_id}) を削除しました。")
+
+# --- リアクションロール（任意ロール）関連UI ---
+class CustomRolePanelSetupModal(discord.ui.Modal, title="任意ロールパネル設置"):
+    panel_title = discord.ui.TextInput(label="パネルのタイトル", default="ロール付与パネル")
+    panel_desc = discord.ui.TextInput(
+        label="説明文 (例: 🎮:ゲーム)", 
+        style=discord.TextStyle.paragraph, 
+        default="以下のリアクションを押してロールを取得してください。"
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        embed = discord.Embed(title=self.panel_title.value, description=self.panel_desc.value, color=discord.Color.gold())
+        msg = await interaction.channel.send(embed=embed)
+        await interaction.response.send_message(
+            "パネルを設置しました！続けて以下のメニューから、付与するロールと絵文字を紐付けてください。",
+            view=ReactionRoleAdminView(msg),
+            ephemeral=True
+        )
+
+class ReactionRoleAdminView(discord.ui.View):
+    def __init__(self, target_message: discord.Message):
+        super().__init__(timeout=None)
+        self.target_message = target_message
+        self.selected_role = None
+
+    @discord.ui.select(cls=discord.ui.RoleSelect, placeholder="付与するロールを選択してください...")
+    async def select_role(self, interaction: discord.Interaction, select: discord.ui.RoleSelect):
+        self.selected_role = select.values[0]
+        await interaction.response.send_message(f"ロール {self.selected_role.mention} を選択しました。「絵文字を指定して紐付け」ボタンを押してください。", ephemeral=True)
+        
+    @discord.ui.button(label="絵文字を指定して紐付け", style=discord.ButtonStyle.primary, row=1)
+    async def add_emoji_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.selected_role:
+            return await interaction.response.send_message("先に上のメニューからロールを選択してください。", ephemeral=True)
+        await interaction.response.send_modal(EmojiInputModal(self.target_message, self.selected_role))
+
+class EmojiInputModal(discord.ui.Modal, title="絵文字の指定"):
+    emoji_input = discord.ui.TextInput(
+        label="リアクションに使用する絵文字", 
+        placeholder="🎮 などのUnicode絵文字、またはカスタム絵文字テキスト",
+        max_length=50
+    )
+
+    def __init__(self, target_message: discord.Message, role: discord.Role):
+        super().__init__()
+        self.target_message = target_message
+        self.role = role
+
+    async def on_submit(self, interaction: discord.Interaction):
+        emoji_str = self.emoji_input.value.strip()
+        try:
+            await self.target_message.add_reaction(emoji_str)
+        except discord.HTTPException:
+            return await interaction.response.send_message(f"エラー: 絵文字 `{emoji_str}` をメッセージに追加できませんでした。正しい形式か確認してください。", ephemeral=True)
+            
+        await database.add_reaction_role(self.target_message.id, emoji_str, self.role.id)
+        await interaction.response.send_message(f"✅ 絵文字 {emoji_str} にロール {self.role.mention} を紐付けました！\\n引き続き他のロールを追加する場合は、上の設定パネルを操作してください。", ephemeral=True)
+
+@bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    if payload.user_id == bot.user.id:
+        return
+        
+    emoji_str = str(payload.emoji)
+    role_id = await database.get_reaction_role(payload.message_id, emoji_str)
+    if not role_id:
+        return
+        
+    guild = bot.get_guild(payload.guild_id)
+    if not guild:
+        return
+        
+    member = guild.get_member(payload.user_id)
+    if not member:
+        return
+        
+    role = guild.get_role(role_id)
+    if role:
+        try:
+            await member.add_roles(role)
+        except discord.Forbidden:
+            pass
+
+@bot.event
+async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
+    if payload.user_id == bot.user.id:
+        return
+        
+    emoji_str = str(payload.emoji)
+    role_id = await database.get_reaction_role(payload.message_id, emoji_str)
+    if not role_id:
+        return
+        
+    guild = bot.get_guild(payload.guild_id)
+    if not guild:
+        return
+        
+    member = guild.get_member(payload.user_id)
+    if not member:
+        return
+        
+    role = guild.get_role(role_id)
+    if role:
+        try:
+            await member.remove_roles(role)
+        except discord.Forbidden:
+            pass
 
 if __name__ == "__main__":
     if TOKEN:

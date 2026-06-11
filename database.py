@@ -176,6 +176,14 @@ async def setup_db():
                 created_at TIMESTAMP
             )
         ''')
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS reaction_roles (
+                message_id BIGINT,
+                emoji TEXT,
+                role_id BIGINT,
+                PRIMARY KEY (message_id, emoji)
+            )
+        ''')
 
 
 async def get_user(user_id: int):
@@ -677,5 +685,26 @@ async def get_user_evaluation_counts(target_user_id: int) -> dict:
             GROUP BY result
         ''', target_user_id)
         return {r['result']: r['count'] for r in rows}
+
+async def add_reaction_role(message_id: int, emoji: str, role_id: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO reaction_roles (message_id, emoji, role_id)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (message_id, emoji) DO UPDATE SET role_id = EXCLUDED.role_id
+        ''', message_id, emoji, role_id)
+
+async def remove_reaction_role(message_id: int, emoji: str):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('DELETE FROM reaction_roles WHERE message_id = $1 AND emoji = $2', message_id, emoji)
+
+async def get_reaction_role(message_id: int, emoji: str):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        row = await conn.fetchrow('SELECT role_id FROM reaction_roles WHERE message_id = $1 AND emoji = $2', message_id, emoji)
+        return row['role_id'] if row else None
+
 
 
