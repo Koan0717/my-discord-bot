@@ -568,6 +568,16 @@ async def send_economy_log(guild: discord.Guild, title: str, description: str, u
         embed.set_author(name=f"{user} (ID: {user.id})", icon_url=user.display_avatar.url)
     await send_log(guild, "economy", embed)
 
+async def send_gambling_log(guild: discord.Guild, user: discord.Member, game_name: str, bet: int, count: int):
+    bal = await database.get_balance(user.id)
+    rem = 10 - count
+    await send_economy_log(
+        guild, 
+        f"🎲 カジノ ({game_name})", 
+        f"{user.mention} が **{game_name}** に **{bet} {CURRENCY_NAME}** 賭けました。\n💰 残高: **{bal} {CURRENCY_NAME}**\n🔄 残り回数: **{rem}回**", 
+        user=user
+    )
+
 # --- イベント ---
 @bot.event
 async def on_message(message):
@@ -2451,6 +2461,7 @@ class ChinchiroBetModal(discord.ui.Modal, title='チンチロリン：賭け金�
             if await database.get_balance(interaction.user.id) < bet: return await interaction.followup.send("残高不足です。", ephemeral=True)
             await database.remove_balance(interaction.user.id, bet)
             await database.increment_gambling_count(interaction.user.id)
+            await send_gambling_log(interaction.guild, interaction.user, "チンチロリン", bet, count + 1)
             view = ChinchiroGameView(interaction.user, bet)
             await interaction.followup.send(f"🎲 **チンチロリン開始！** (本日 {count+1}/10回目)\n賭け金: **{bet} {CURRENCY_NAME}**", view=view, ephemeral=True)
         except: await interaction.response.send_message("数字を入力してください。", ephemeral=True)
@@ -2511,6 +2522,7 @@ class CoinflipGameView(discord.ui.View):
         if it.user != self.user: return
         if not await database.remove_balance(self.user.id, self.bet): return await it.response.edit_message(content="残高不足", view=None)
         await database.increment_gambling_count(self.user.id)
+        await send_gambling_log(it.guild, self.user, "コイントス", self.bet, self.count + 1)
         res = random.choice(["heads", "tails"])
         if choice == res:
             await database.add_balance(self.user.id, int(self.bet*2.0)); await send_economy_log(interaction.guild, "🎲 カジノ(コイントス)", f"{self.user.mention} がコイントスで {int(self.bet*1.0)} {CURRENCY_NAME} 獲得しました。", user=self.user)
@@ -2542,6 +2554,7 @@ class SlotBetModal(discord.ui.Modal, title='スロット：賭け金入力'):
             if count >= 10: return await it.followup.send("回数制限です。", ephemeral=True)
             if not await database.remove_balance(it.user.id, bet): return await it.followup.send("残高不足です。", ephemeral=True)
             await database.increment_gambling_count(it.user.id)
+            await send_gambling_log(it.guild, it.user, "スロット", bet, count + 1)
             emo = ["🍒", "🍋", "🍉", "🔔", "⭐", "7️⃣", "💎", "🍀"]
             r = [random.choice(emo) for _ in range(3)]
             mul = 10 if r[0]==r[1]==r[2]=="7️⃣" else (5 if r[0]==r[1]==r[2]=="⭐" else (3 if r[0]==r[1]==r[2] else (1.5 if len(set(r))<3 else 0)))
@@ -2603,6 +2616,7 @@ class BlackjackBetModal(discord.ui.Modal, title='ブラックジャック：賭�
             
             await database.remove_balance(interaction.user.id, bet)
             await database.increment_gambling_count(interaction.user.id)
+            await send_gambling_log(interaction.guild, interaction.user, "ブラックジャック", bet, count + 1)
             
             view = BlackjackGameView(interaction.user, bet)
             initial_blackjack_embed = await view.check_initial_blackjack()
@@ -2956,6 +2970,7 @@ async def run_roulette_game(interaction: discord.Interaction, user, bet, count, 
         return
         
     await database.increment_gambling_count(user.id)
+    await send_gambling_log(interaction.guild, user, "ルーレット", bet, current_count + 1)
     
     red_numbers = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
     
