@@ -5657,25 +5657,58 @@ class ReactionRoleAdminView(discord.ui.View):
         self.selected_role = select.values[0]
         await interaction.response.send_message(f"ロール {self.selected_role.mention} を選択しました。「絵文字を指定して紐付け」ボタンを押してください。", ephemeral=True)
         
-    @discord.ui.button(label="絵文字を選択して紐付け", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(label="絵文字を検索・直接入力して紐付け", style=discord.ButtonStyle.primary, row=1)
     async def add_emoji_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.selected_role:
             return await interaction.response.send_message("先に上のメニューからロールを選択してください。", ephemeral=True)
+        await interaction.response.send_modal(EmojiSearchModal(self.target_message, self.selected_role))
+
+class EmojiSearchModal(discord.ui.Modal, title="絵文字の検索・入力"):
+    emoji_input = discord.ui.TextInput(
+        label="検索キーワード、または絵文字の直接入力", 
+        placeholder="例: game、cat、🎮 など",
+        max_length=50
+    )
+
+    def __init__(self, target_message: discord.Message, role: discord.Role):
+        super().__init__()
+        self.target_message = target_message
+        self.role = role
+
+    async def on_submit(self, interaction: discord.Interaction):
+        query = self.emoji_input.value.strip()
         
-        common_emojis = ["🎮", "🎲", "🎯", "🎨", "🎵", "📚", "🏆", "✨", "🌟", "🔥", "💧", "🌿", "⚡", "❄️", "🌙", "☀️", "☁️", "🍎", "🍔", "☕", "🚗", "🏠", "💻", "📱", "⚙️"]
-        common_options = [discord.SelectOption(label=f"標準絵文字: {e}", emoji=e, value=e) for e in common_emojis]
-        
-        server_emojis = interaction.guild.emojis[:25]
-        server_options = []
-        for e in server_emojis:
-            server_options.append(discord.SelectOption(label=f"カスタム絵文字: {e.name}", emoji=e, value=f"<:{e.name}:{e.id}>" if not e.animated else f"<a:{e.name}:{e.id}>"))
-        
-        view = discord.ui.View(timeout=None)
-        view.add_item(EmojiSelectMenu(self.target_message, self.selected_role, common_options, "標準の絵文字から選択..."))
-        if server_options:
-            view.add_item(EmojiSelectMenu(self.target_message, self.selected_role, server_options, "サーバーのカスタム絵文字から選択..."))
+        # 直接絵文字が入力されたか試行
+        try:
+            emoji_obj = query
+            if query.startswith('<') and query.endswith('>'):
+                emoji_obj = discord.PartialEmoji.from_str(query)
+            await self.target_message.add_reaction(emoji_obj)
             
-        await interaction.response.send_message(f"ロール {self.selected_role.mention} と紐付ける絵文字を下のメニューから選択してください。", view=view, ephemeral=True)
+            # 成功したらそのまま登録
+            await database.add_reaction_role(self.target_message.id, query, self.role.id)
+            return await interaction.response.send_message(f"✅ 絵文字 {query} にロール {self.role.mention} を紐付けました！\\n引き続き他のロールを追加する場合は、一番最初の設定パネルを操作してください。", ephemeral=True)
+        except Exception:
+            pass # 直接追加に失敗した場合は検索フローへ
+            
+        # 検索キーワードとしての処理
+        server_emojis = interaction.guild.emojis
+        matched_emojis = [e for e in server_emojis if query.lower() in e.name.lower()]
+        
+        if not matched_emojis:
+            return await interaction.response.send_message(f"❌ 入力された `{query}` を直接絵文字として追加できず、また一致するサーバー絵文字も見つかりませんでした。別のキーワードをお試しください。", ephemeral=True)
+            
+        if len(matched_emojis) > 25:
+            matched_emojis = matched_emojis[:25]
+            
+        options = []
+        for e in matched_emojis:
+            options.append(discord.SelectOption(label=f"{e.name}", emoji=e, value=f"<:{e.name}:{e.id}>" if not e.animated else f"<a:{e.name}:{e.id}>"))
+            
+        view = discord.ui.View(timeout=None)
+        view.add_item(EmojiSelectMenu(self.target_message, self.role, options, f"検索結果: {len(matched_emojis)}件..."))
+        
+        await interaction.response.send_message(f"🔍 検索キーワード `{query}` の結果です。\\nロール {self.role.mention} と紐付ける絵文字を選択してください。", view=view, ephemeral=True)
 
 class EmojiSelectMenu(discord.ui.Select):
     def __init__(self, target_message: discord.Message, role: discord.Role, options: list, placeholder: str):
@@ -5694,7 +5727,7 @@ class EmojiSelectMenu(discord.ui.Select):
             return await interaction.response.send_message(f"エラー: 絵文字 `{emoji_str}` をメッセージに追加できませんでした。", ephemeral=True)
             
         await database.add_reaction_role(self.target_message.id, emoji_str, self.role.id)
-        await interaction.response.send_message(f"✅ 絵文字 {emoji_str} にロール {self.role.mention} を紐付けました！\n引き続き他のロールを追加する場合は、一番最初の設定パネルを操作してください。", ephemeral=True)
+        await interaction.response.send_message(f"✅ 絵文字 {emoji_str} にロール {self.role.mention} を紐付けました！\\n引き続き他のロールを追加する場合は、一番最初の設定パネルを操作してください。", ephemeral=True)
 
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
