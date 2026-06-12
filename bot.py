@@ -1467,6 +1467,23 @@ class RoomControlView(discord.ui.View):
             await interaction.response.send_message(f"{target_user.mention} を招待しました！", ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"エラーが発生しました: {e}", ephemeral=True)
+    @discord.ui.select(cls=discord.ui.UserSelect, placeholder="追放するユーザーを選択", custom_id="persistent_room_kick_select", row=3)
+    async def kick_select(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
+        channel = interaction.channel
+        room_data = await database.get_room(channel.id)
+        if not room_data or room_data["owner_id"] != interaction.user.id:
+            if not interaction.user.guild_permissions.administrator:
+                return await interaction.response.send_message("自分が作成した（所有している）部屋ではありません。", ephemeral=True)
+        target_user = select.values[0]
+        if target_user == interaction.user:
+            return await interaction.response.send_message("自分自身を追放することはできません。", ephemeral=True)
+        try:
+            await channel.set_permissions(target_user, overwrite=None)
+            if isinstance(target_user, discord.Member) and target_user.voice and target_user.voice.channel == channel:
+                await target_user.move_to(None)
+            await interaction.response.send_message(f"{target_user.mention} の招待を取り消し、追放しました。", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"エラーが発生しました: {e}", ephemeral=True)
 
 class CustomRoomControlView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None)
