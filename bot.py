@@ -1452,6 +1452,21 @@ class RoomControlView(discord.ui.View):
     async def rename_button(self, interaction, button): await interaction.response.send_modal(RenameModal())
     @discord.ui.button(label="人数制限", style=discord.ButtonStyle.secondary, custom_id="persistent_limit_btn", row=1)
     async def limit_button(self, interaction, button): await interaction.response.send_modal(LimitModal())
+    @discord.ui.select(cls=discord.ui.UserSelect, placeholder="招待するユーザーを選択", custom_id="persistent_room_invite_select", row=2)
+    async def invite_select(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
+        channel = interaction.channel
+        room_data = await database.get_room(channel.id)
+        if not room_data or room_data["owner_id"] != interaction.user.id:
+            if not interaction.user.guild_permissions.administrator:
+                return await interaction.response.send_message("自分が作成した（所有している）部屋ではありません。", ephemeral=True)
+        target_user = select.values[0]
+        if target_user == interaction.user:
+            return await interaction.response.send_message("自分自身を招待することはできません。", ephemeral=True)
+        try:
+            await channel.set_permissions(target_user, view_channel=True, connect=True)
+            await interaction.response.send_message(f"{target_user.mention} を招待しました！", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"エラーが発生しました: {e}", ephemeral=True)
 
 class CustomRoomControlView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None)
