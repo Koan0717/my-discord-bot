@@ -2347,6 +2347,15 @@ async def process_room_purchase(interaction: discord.Interaction, room_type: str
                     interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
                     interaction.user: discord.PermissionOverwrite(view_channel=True, connect=True, manage_channels=True, move_members=True, manage_permissions=True)
                 }
+            elif room_type == "宿":
+                overwrites = {
+                    interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                    interaction.user: discord.PermissionOverwrite(view_channel=True, connect=True, move_members=True)
+                }
+                for rid in [1502720032780845097, 1502719973213343814, 1502719883991978033, 1502720409710100520]:
+                    role = interaction.guild.get_role(rid)
+                    if role:
+                        overwrites[role] = discord.PermissionOverwrite(view_channel=True, connect=True)
             else:
                 overwrites = {
                     interaction.guild.default_role: discord.PermissionOverwrite(connect=True),
