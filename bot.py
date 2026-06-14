@@ -584,6 +584,27 @@ async def on_message(message):
     if message.author.bot:
         return
     
+    if message.guild:
+        sticky_data = await database.get_sticky_template(message.channel.id)
+        if sticky_data:
+            if sticky_data["last_message_id"]:
+                try:
+                    old_msg = await message.channel.fetch_message(sticky_data["last_message_id"])
+                    await old_msg.delete()
+                except:
+                    pass
+            if sticky_data.get("last_text_message_id"):
+                try:
+                    old_text_msg = await message.channel.fetch_message(sticky_data["last_text_message_id"])
+                    await old_text_msg.delete()
+                except:
+                    pass
+
+            text_content = sticky_data['content']
+            new_msg = await message.channel.send(content=text_content)
+            
+            await database.update_sticky_last_message(message.channel.id, new_msg.id, None)
+
     user_id = message.author.id
     now = datetime.datetime.now(JST)
 
@@ -5069,6 +5090,37 @@ class BotSetupConfigureView(discord.ui.View):
             return False
         return True
 
+class StickyTemplateModal(discord.ui.Modal, title='常設テンプレートの作成'):
+    t_title = discord.ui.TextInput(
+        label='題名',
+        style=discord.TextStyle.short,
+        placeholder='Stickied Message:',
+        required=True,
+        max_length=200
+    )
+    t_content = discord.ui.TextInput(
+        label='テンプレ内容',
+        style=discord.TextStyle.paragraph,
+        placeholder='コピーさせたい内容を入力してください',
+        required=True,
+        max_length=4000
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        channel_id = interaction.channel_id
+        title = self.t_title.value
+        content = self.t_content.value
+        
+        await database.set_sticky_template(channel_id, title, content)
+        
+        text_content = content
+        new_msg = await interaction.channel.send(content=text_content)
+        
+        await database.update_sticky_last_message(channel_id, new_msg.id, None)
+        
+        await interaction.followup.send("✅ このチャンネルに常設テンプレートを設定しました。", ephemeral=True)
+
 class AdminGroup(app_commands.Group):
     def __init__(self): super().__init__(name="管理者", description="【管理者専用】管理コマンド")
 
@@ -5197,6 +5249,37 @@ class AdminGroup(app_commands.Group):
             txt += f"- CH ID: {r['channel_id']} | 所有者ID: {r['owner_id']} | {status}\n"
         
         await it.response.send_message(txt[:2000], ephemeral=True)
+
+    @app_commands.command(name="テンプレ作成", description="【管理者専用】現在のチャンネルに常設するテンプレートを作成します")
+    @is_admin()
+    async def sticky_template_create(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(StickyTemplateModal())
+
+    @app_commands.command(name="テンプレ削除", description="【管理者専用】現在のチャンネルの常設テンプレートを削除します")
+    @is_admin()
+    async def sticky_template_delete(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        channel_id = interaction.channel_id
+        data = await database.get_sticky_template(channel_id)
+        if not data:
+            return await interaction.followup.send("❌ このチャンネルには常設テンプレートが設定されていません。", ephemeral=True)
+        
+        await database.delete_sticky_template(channel_id)
+        
+        if data["last_message_id"]:
+            try:
+                msg = await interaction.channel.fetch_message(data["last_message_id"])
+                await msg.delete()
+            except:
+                pass
+        
+        if data.get("last_text_message_id"):
+            try:
+                text_msg = await interaction.channel.fetch_message(data["last_text_message_id"])
+                await text_msg.delete()
+            except:
+                pass
+        await interaction.followup.send("✅ 常設テンプレートを削除しました。", ephemeral=True)
 
 class InterviewerGroup(app_commands.Group):
     def __init__(self): super().__init__(name="面接官", description="【面接官専用】手続きコマンド")

@@ -191,6 +191,19 @@ async def setup_db():
             )
         ''')
 
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS sticky_templates (
+                channel_id BIGINT PRIMARY KEY,
+                title TEXT,
+                content TEXT,
+                last_message_id BIGINT
+            )
+        ''')
+        try:
+            await conn.execute('ALTER TABLE sticky_templates ADD COLUMN IF NOT EXISTS last_text_message_id BIGINT')
+        except Exception as e:
+            print(f"[Migration] sticky_templates migration warning: {e}")
+
 
 async def get_user(user_id: int):
     p = await get_pool()
@@ -715,6 +728,43 @@ async def remove_reaction_role(message_id: int, emoji: str):
     p = await get_pool()
     async with p.acquire() as conn:
         await conn.execute('DELETE FROM reaction_roles WHERE message_id = $1 AND emoji = $2', message_id, emoji)
+
+# --- 常設テンプレート(Sticky Template)管理用関数 ---
+async def get_sticky_template(channel_id: int) -> dict:
+    p = await get_pool()
+    async with p.acquire() as conn:
+        row = await conn.fetchrow('SELECT title, content, last_message_id, last_text_message_id FROM sticky_templates WHERE channel_id = $1', channel_id)
+        if row:
+            return {
+                "title": row["title"],
+                "content": row["content"],
+                "last_message_id": row["last_message_id"],
+                "last_text_message_id": row["last_text_message_id"] if "last_text_message_id" in row else None
+            }
+        return None
+
+async def set_sticky_template(channel_id: int, title: str, content: str):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO sticky_templates (channel_id, title, content, last_message_id, last_text_message_id)
+            VALUES ($1, $2, $3, NULL, NULL)
+            ON CONFLICT (channel_id)
+            DO UPDATE SET title = EXCLUDED.title, content = EXCLUDED.content, last_message_id = NULL, last_text_message_id = NULL
+        ''', channel_id, title, content)
+
+async def update_sticky_last_message(channel_id: int, message_id: int, text_message_id: int = None):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('''
+            UPDATE sticky_templates SET last_message_id = $2, last_text_message_id = $3 WHERE channel_id = $1
+        ''', channel_id, message_id, text_message_id)
+
+async def delete_sticky_template(channel_id: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('DELETE FROM sticky_templates WHERE channel_id = $1', channel_id)
+
 
 async def get_reaction_role(message_id: int, emoji: str):
     p = await get_pool()
