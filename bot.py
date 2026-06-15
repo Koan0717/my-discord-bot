@@ -5489,20 +5489,55 @@ async def get_thread_reaction_counts(interaction: discord.Interaction, user: dis
     if tier >= 3:
         if get_setting("EVALUATION_FORUM_TIER3_IDS"): forum_ids.update(get_setting("EVALUATION_FORUM_TIER3_IDS"))
     
+    active_threads = []
+    try:
+        active_threads = await interaction.guild.active_threads()
+    except Exception:
+        pass
+    
     for fid in forum_ids:
         ch = interaction.guild.get_channel(fid)
         if not ch: continue
             
         target_threads = []
+        
+        # 1. APIから取得したアクティブスレッド
+        for t in active_threads:
+            if t.parent_id == ch.id:
+                name_match = (
+                    user.name in t.name or 
+                    user.display_name in t.name or 
+                    (hasattr(user, 'global_name') and user.global_name and user.global_name in t.name) or
+                    str(user.id) in t.name
+                )
+                if name_match:
+                    target_threads.append(t)
+                    
+        # 2. キャッシュ済みスレッド（重複排除）
         if hasattr(ch, "threads"):
             for t in ch.threads:
-                if user.name in t.name or user.display_name in t.name:
-                    target_threads.append(t)
+                if t not in target_threads:
+                    name_match = (
+                        user.name in t.name or 
+                        user.display_name in t.name or 
+                        (hasattr(user, 'global_name') and user.global_name and user.global_name in t.name) or
+                        str(user.id) in t.name
+                    )
+                    if name_match:
+                        target_threads.append(t)
                 
+        # 3. アーカイブ済みスレッド
         if hasattr(ch, 'archived_threads'):
             async for t in ch.archived_threads(limit=100):
-                if user.name in t.name or user.display_name in t.name:
-                    target_threads.append(t)
+                if t not in target_threads:
+                    name_match = (
+                        user.name in t.name or 
+                        user.display_name in t.name or 
+                        (hasattr(user, 'global_name') and user.global_name and user.global_name in t.name) or
+                        str(user.id) in t.name
+                    )
+                    if name_match:
+                        target_threads.append(t)
                 
         for t in target_threads:
             try:
