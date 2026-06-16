@@ -1,0 +1,82 @@
+[
+  {
+    "line": 60,
+    "text": "EVALUATOR_ROLE_NAMES = [\"【仮】評価員ロール名A\", \"【仮】評価員ロール名B\"]"
+  },
+  {
+    "line": 80,
+    "text": "\"EVALUATOR_ROLE_IDS\": [],"
+  },
+  {
+    "line": 87,
+    "text": "if hasattr(bot, 'bot_settings') and key in bot.bot_settings:"
+  },
+  {
+    "line": 88,
+    "text": "return bot.bot_settings[key]"
+  },
+  {
+    "line": 89,
+    "text": "if key == \"EVAL_TIME_CATEGORY_ID\" and hasattr(bot, 'bot_settings') and \"RANKING_CATEGORY_ID\" in bot.bot_settings:"
+  },
+  {
+    "line": 90,
+    "text": "return bot.bot_settings[\"RANKING_CATEGORY_ID\"]"
+  },
+  {
+    "line": 126,
+    "text": "def has_evaluator_role(user: discord.Member):"
+  },
+  {
+    "line": 127,
+    "text": "eval_role_ids = get_setting(\"EVALUATOR_ROLE_IDS\")"
+  },
+  {
+    "line": 133,
+    "text": "if any(name in EVALUATOR_ROLE_NAMES or name in ADMIN_ROLE_NAMES for name in user_role_names):"
+  },
+  {
+    "line": 309,
+    "text": "self.bot_settings = await database.load_settings()"
+  },
+  {
+    "line": 4467,
+    "text": "evaluator_str = format_setting_status(interaction.guild, 'EVALUATOR_ROLE_IDS')"
+  },
+  {
+    "line": 4468,
+    "text": "if \"❌\" in evaluator_str: evaluator_str = \"名前一致: \" + \", \".join(EVALUATOR_ROLE_NAMES)"
+  },
+  {
+    "line": 4505,
+    "text": "f\"評価員ロール: {evaluator_str}\\n\""
+  },
+  {
+    "line": 4683,
+    "text": "discord.SelectOption(label=\"👥 評価員ロール\", value=\"EVALUATOR_ROLE_IDS\", description=\"評価員のロールを設定します\"),"
+  },
+  {
+    "line": 4721,
+    "text": "f\"• 評価員: {format_setting_status(guild, 'EVALUATOR_ROLE_IDS')}\\n\""
+  },
+  {
+    "line": 4771,
+    "text": "interaction.client.bot_settings[self.key] = value"
+  },
+  {
+    "line": 4802,
+    "text": "interaction.client.bot_settings[self.key] = value"
+  },
+  {
+    "line": 5030,
+    "text": "if not has_evaluator_role(interaction.user) and not interaction.user.guild_permissions.administrator:"
+  },
+  {
+    "line": 5051,
+    "text": "if not has_evaluator_role(interaction.user) and not interaction.user.guild_permissions.administrator:"
+  },
+  {
+    "line": 5070,
+    "text": "if not has_evaluator_role(interaction.user) and not interaction.user.guild_permissions.administrator:"
+  }
+]
