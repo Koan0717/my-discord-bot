@@ -47,9 +47,10 @@ class AdminCog(commands.Cog):
     @AdminGroup.command(name="設定パネル", description="【運営専用】Botの基本設定パネルを表示します")
     @is_admin()
     async def bot_setup(self, interaction: discord.Interaction):
-        view = BotSetupMainView(interaction.user)
-        embed = view.build_embed(interaction.guild)
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        view = BotSetupMainView(interaction.user, interaction.client)
+        embed = await view.build_embed(interaction.guild)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
     @AdminGroup.command(name="パネル設置", description="【運営専用】各種コントロールパネル（カジノ、部屋作成など）を設置します")
     @is_admin()
@@ -1446,7 +1447,7 @@ class BackToAdminPanelButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        view = BotSetupMainView(interaction.user)
+        view = BotSetupMainView(interaction.user, interaction.client)
         embed = await view.build_embed(interaction.guild)
         await interaction.edit_original_response(embed=embed, view=view)
 
@@ -2090,9 +2091,10 @@ class BotSetupConfigureView(discord.ui.View):
 
     @discord.ui.button(label="戻る", style=discord.ButtonStyle.secondary, emoji="⬅️")
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
-        view = BotSetupMainView(self.user)
+        await interaction.response.defer()
+        view = BotSetupMainView(self.user, interaction.client)
         embed = await view.build_embed(interaction.guild)
-        await interaction.response.edit_message(embed=embed, view=view)
+        await interaction.edit_original_response(embed=embed, view=view)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user != self.user:
