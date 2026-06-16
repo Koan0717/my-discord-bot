@@ -12,6 +12,8 @@ from cogs.tickets import InquiryRequestPanelView, EmblemRequestPanelView, Confes
 from cogs.rooms import MainInnPanelView, TempInnPanelView, LuxuryInnPanelView, CustomRoomView, VCRenamePanelView
 from cogs.gambling import ChinchiroView, CoinflipView, SlotView, BlackjackView, RouletteView
 
+_bot_instance = None
+
 # --- 運営権限チェック ---
 def is_admin():
     async def predicate(interaction: discord.Interaction):
@@ -26,6 +28,8 @@ def is_admin():
 class AdminCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        global _bot_instance
+        _bot_instance = bot
 
     AdminGroup = app_commands.Group(name="管理者", description="【管理者専用】管理コマンド")
 
@@ -188,8 +192,9 @@ async def setup(bot):
 # --- ヘルパーと設定用ビュー ---
 
 def format_setting_status(guild, key, bot=None):
-    if bot is None and hasattr(guild, '_state') and hasattr(guild._state, 'client'):
-        bot = guild._state.client
+    if bot is None:
+        global _bot_instance
+        bot = _bot_instance
     val = config.get_setting(bot, key)
     is_unset = False
     if val is None:
