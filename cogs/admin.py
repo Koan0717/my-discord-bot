@@ -658,7 +658,8 @@ class LogTypeSelect(discord.ui.Select):
             discord.SelectOption(label="🗑️ メッセージ削除", value="message_delete", description="メッセージ削除ログ"),
             discord.SelectOption(label="🎙️ VC参加・退出", value="vc_join_leave", description="VC参加・移動・退出ログ"),
             discord.SelectOption(label="👥 メンバー入退", value="member_join_leave", description="サーバー参加・退出ログ"),
-            discord.SelectOption(label="💰 通貨・経済", value="economy", description="通貨の付与・送金・お渡し等のログ")
+            discord.SelectOption(label="💰 通貨・経済", value="economy", description="通貨の付与・送金・お渡し等のログ"),
+            discord.SelectOption(label="👔 面接官ログ", value="interviewer", description="面接官の入界手続きなどのアクションログ")
         ]
         super().__init__(placeholder="設定するログの種類を選択...", min_values=1, max_values=1, options=options, row=0)
 
@@ -710,7 +711,8 @@ class RemoveLogSettingSelect(discord.ui.Select):
             "message_delete": "メッセージ削除",
             "vc_join_leave": "VC参加・退出",
             "member_join_leave": "メンバー入退",
-            "economy": "通貨・経済"
+            "economy": "通貨・経済",
+            "interviewer": "面接官ログ"
         }
         for l_type, ch_id in settings.items():
             ch = guild.get_channel(ch_id)
@@ -768,7 +770,8 @@ async def update_log_settings_config_view(interaction: discord.Interaction):
         "message_delete": "🗑️ メッセージ削除",
         "vc_join_leave": "🎙️ VC参加・退出",
         "member_join_leave": "👥 メンバー入退",
-        "economy": "💰 通貨・経済"
+        "economy": "💰 通貨・経済",
+        "interviewer": "👔 面接官ログ"
     }
     
     settings_str = ""
@@ -823,7 +826,8 @@ class ManageLogSettingsButton(discord.ui.Button):
             "message_delete": "🗑️ メッセージ削除",
             "vc_join_leave": "🎙️ VC参加・退出",
             "member_join_leave": "👥 メンバー入退",
-            "economy": "💰 通貨・経済"
+            "economy": "💰 通貨・経済",
+            "interviewer": "👔 面接官ログ"
         }
         
         settings_str = ""

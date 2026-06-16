@@ -115,6 +115,25 @@ class InterviewCog(commands.Cog):
                     f"面接官の {interaction.user.mention} が {member.mention} の入界手続きを実行し、初期通貨 **{config.INITIAL_COINS} {config.CURRENCY_NAME}** を付与しました。",
                     user=member
                 )
+                try:
+                    await database.add_interviewer_log(interaction.user.id, member.id, interaction.guild.id)
+                    interviewer_count = await database.get_interviewer_count(interaction.user.id)
+                    vc_name = "❌ VC未接続"
+                    if interaction.user.voice and interaction.user.voice.channel:
+                        vc_name = f"🔊 {interaction.user.voice.channel.name}"
+                    embed_interviewer = discord.Embed(
+                        title="📝 面接官アクション: 入界手続き実行",
+                        description="面接官による入界手続きアクションが実行されました。",
+                        color=discord.Color.purple(),
+                        timestamp=discord.utils.utcnow()
+                    )
+                    embed_interviewer.add_field(name="面接官", value=f"{interaction.user.mention} (ID: {interaction.user.id})", inline=False)
+                    embed_interviewer.add_field(name="許可されたユーザー", value=f"{member.mention} (ID: {member.id})", inline=False)
+                    embed_interviewer.add_field(name="実行場所", value=vc_name, inline=True)
+                    embed_interviewer.add_field(name="対応実績", value=f"累計 {interviewer_count} 人目の対応", inline=True)
+                    await config.send_log(interaction.guild, "interviewer", embed_interviewer)
+                except Exception as log_err:
+                    print(f"[ERROR] Failed to send interviewer log in execute_interview: {log_err}")
             except Exception as e:
                 results.append(f"❌ {member.display_name} -> 権限エラー等")
                 
@@ -156,6 +175,25 @@ class InterviewCog(commands.Cog):
                 f"面接官の {interaction.user.mention} が {user.mention} の手動入界手続きを実行し、初期通貨 **{config.INITIAL_COINS} {config.CURRENCY_NAME}** を付与しました。",
                 user=user
             )
+            try:
+                await database.add_interviewer_log(interaction.user.id, user.id, interaction.guild.id)
+                interviewer_count = await database.get_interviewer_count(interaction.user.id)
+                vc_name = "❌ VC未接続"
+                if interaction.user.voice and interaction.user.voice.channel:
+                    vc_name = f"🔊 {interaction.user.voice.channel.name}"
+                embed_interviewer = discord.Embed(
+                    title="📝 面接官アクション: 初期発行 (手動)",
+                    description="面接官による手動入界手続き（初期発行）アクションが実行されました。",
+                    color=discord.Color.purple(),
+                    timestamp=discord.utils.utcnow()
+                )
+                embed_interviewer.add_field(name="面接官", value=f"{interaction.user.mention} (ID: {interaction.user.id})", inline=False)
+                embed_interviewer.add_field(name="許可されたユーザー", value=f"{user.mention} (ID: {user.id})", inline=False)
+                embed_interviewer.add_field(name="実行場所", value=vc_name, inline=True)
+                embed_interviewer.add_field(name="対応実績", value=f"累計 {interviewer_count} 人目の対応", inline=True)
+                await config.send_log(interaction.guild, "interviewer", embed_interviewer)
+            except Exception as log_err:
+                print(f"[ERROR] Failed to send interviewer log in manual_issue: {log_err}")
         except Exception as e:
             await interaction.followup.send(f"❌ {user.display_name} の手続き中にエラーが発生しました: {e}", ephemeral=True)
 
