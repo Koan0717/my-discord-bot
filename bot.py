@@ -142,7 +142,7 @@ class EconomyBot(commands.Bot):
         for extension in cogs:
             try:
                 await self.load_extension(extension)
-                print(f"✅ Loaded extension: {extension}")
+                print(f"[OK] Loaded extension: {extension}")
             except Exception as cog_e:
                 print(f"[ERROR] Failed to load extension {extension}: {cog_e}")
 
@@ -160,12 +160,12 @@ class EconomyBot(commands.Bot):
             port = int(os.environ.get("PORT", 8080))
             site = web.TCPSite(runner, '0.0.0.0', port)
             await site.start()
-            print(f"✅ Web server started on port {port} (Render Health Check)", flush=True)
+            print(f"[OK] Web server started on port {port} (Render Health Check)", flush=True)
         except Exception as web_e:
             print(f"[ERROR] Failed to start web server: {web_e}", flush=True)
 
-        print(f"✅ Bot is ready! Logged in as {self.user} (ID: {self.user.id})")
-        print("✅ Slash commands and persistent views are synced.")
+        print(f"[SUCCESS] Bot is ready! Logged in as {self.user} (ID: {self.user.id})")
+        print("[SUCCESS] Slash commands and persistent views are synced.")
 
 bot = EconomyBot()
 
