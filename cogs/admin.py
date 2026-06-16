@@ -187,8 +187,10 @@ async def setup(bot):
 
 # --- ヘルパーと設定用ビュー ---
 
-def format_setting_status(guild, key):
-    val = config.get_setting(None, key) # デフォルト値取得用
+def format_setting_status(guild, key, bot=None):
+    if bot is None and hasattr(guild, '_state') and hasattr(guild._state, 'client'):
+        bot = guild._state.client
+    val = config.get_setting(bot, key)
     is_unset = False
     if val is None:
         is_unset = True
@@ -1416,7 +1418,7 @@ async def update_main_admin_panel(interaction: discord.Interaction, bot):
     emblem_master_str = format_setting_status(interaction.guild, 'EMBLEM_MASTER_ROLE_ID')
     if "❌" in emblem_master_str: emblem_master_str = "名前一致: " + config.EMBLEM_MASTER_ROLE_NAME
     confession_priest_str = format_setting_status(interaction.guild, 'CONFESSION_PRIEST_ROLE_ID')
-    if "❌" in confession_priest_str: confession_priest_str = "名前一致: " + config.CONFESSION_PRIEST_ROLE_ID
+    if "❌" in confession_priest_str: confession_priest_str = "名前一致: " + config.CONFESSION_PRIEST_ROLE_NAME
     priest_str = format_setting_status(interaction.guild, 'PRIEST_ROLE_ID')
     if "❌" in priest_str: priest_str = "名前一致: " + config.PRIEST_ROLE_NAME
 
