@@ -192,6 +192,16 @@ async def setup_db():
         ''')
 
         await conn.execute('''
+            CREATE TABLE IF NOT EXISTS interviewer_logs (
+                interviewer_id BIGINT,
+                target_user_id BIGINT,
+                guild_id BIGINT,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (interviewer_id, target_user_id)
+            )
+        ''')
+
+        await conn.execute('''
             CREATE TABLE IF NOT EXISTS sticky_templates (
                 channel_id BIGINT PRIMARY KEY,
                 title TEXT,
@@ -771,6 +781,23 @@ async def get_reaction_role(message_id: int, emoji: str):
     async with p.acquire() as conn:
         row = await conn.fetchrow('SELECT role_id FROM reaction_roles WHERE message_id = $1 AND emoji = $2', message_id, emoji)
         return row['role_id'] if row else None
+
+
+async def add_interviewer_log(interviewer_id: int, target_user_id: int, guild_id: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO interviewer_logs (interviewer_id, target_user_id, guild_id)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (interviewer_id, target_user_id) DO NOTHING
+        ''', interviewer_id, target_user_id, guild_id)
+
+async def get_interviewer_count(interviewer_id: int) -> int:
+    p = await get_pool()
+    async with p.acquire() as conn:
+        val = await conn.fetchval('SELECT COUNT(*) FROM interviewer_logs WHERE interviewer_id = $1', interviewer_id)
+        return val or 0
+
 
 
 
