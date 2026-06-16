@@ -25,45 +25,84 @@ def is_admin():
         return False
     return app_commands.check(predicate)
 
+def is_admin_or_interviewer():
+    async def predicate(interaction: discord.Interaction):
+        if not interaction.guild:
+            return False
+        if config.has_admin_role(interaction.client, interaction.user) or config.has_interviewer_role(interaction.client, interaction.user):
+            return True
+        await interaction.response.send_message("このコマンドを実行する権限がありません（運営または面接官権限が必要です）。", ephemeral=True)
+        return False
+    return app_commands.check(predicate)
+
+
 class AdminCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         global _bot_instance
         _bot_instance = bot
 
-    AdminGroup = app_commands.Group(name="管理者", description="【管理者専用】管理コマンド")
+    AdminGroup = app_commands.Group(name="運営", description="【運営専用】管理コマンド")
 
-    @AdminGroup.command(name="bot初期設定", description="【管理者専用】Discord内でBotのロールやチャンネルを設定できる管理画面を表示します")
+    @AdminGroup.command(name="設定パネル", description="【運営専用】Botの基本設定パネルを表示します")
     @is_admin()
     async def bot_setup(self, interaction: discord.Interaction):
         view = BotSetupMainView(interaction.user)
         embed = view.build_embed(interaction.guild)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    @AdminGroup.command(name="パネル設置", description="【管理者専用】自分にしか見えないパネル設定画面を表示し、各種パネルを設置します")
+    @AdminGroup.command(name="パネル設置", description="【運営専用】各種コントロールパネル（カジノ、部屋作成など）を設置します")
     @is_admin()
     async def panel_setup(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        await update_main_admin_panel(interaction, self.bot)
+        embed = discord.Embed(title="⚙️ パネル設置メニュー", description="設置したい機能を選択肢から選んでください。\n（現在のテキストチャンネルに設置用Embedが送信されます）", color=discord.Color.blue())
+        await interaction.response.send_message(embed=embed, view=PanelSetupView(), ephemeral=True)
 
-    @AdminGroup.command(name="ランクリセット", description="ランクを初期化します")
+    @AdminGroup.command(name="任意ロールパネル設置", description="【運営専用】ユーザーがリアクションを押すことで自由に付与・剥奪できるロールパネルを設置します")
     @is_admin()
-    @app_commands.describe(user="リセットする特定のユーザー", all_players="サーバー全員をリセットする場合は『はい』を選択")
-    async def rank_reset(self, interaction: discord.Interaction, user: discord.Member = None, all_players: bool = False):
-        await interaction.response.defer(ephemeral=True)
-        
-        if all_players:
-            p = await database.get_pool()
-            async with p.acquire() as conn:
-                await conn.execute('UPDATE users SET tc_xp = 0, tc_level = 1, vc_xp = 0, vc_level = 1')
-            await interaction.followup.send("✅ 全ユーザーのランクをリセットしました。", ephemeral=True)
-        elif user:
-            await database.reset_user_rank(user.id)
-            await interaction.followup.send(f"✅ {user.mention} のランクをリセットしました。", ephemeral=True)
-        else:
-            await interaction.followup.send("❌ エラー: ユーザーを指定するか、『全プレイヤー』に『はい』を選択してください。", ephemeral=True)
+    async def reaction_role_setup(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(CustomRolePanelSetupModal())
 
-    @AdminGroup.command(name="通貨付与", description="指定ユーザーに通貨を付与（最大10人まで）")
+    @AdminGroup.command(name="固定テンプレート設定", description="【運営専用】このチャンネルのチャットテンプレートを固定し、常に最新の発言として自動更新します")
+    @is_admin()
+    async def sticky_template_create(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(StickyTemplateModal())
+
+    @AdminGroup.command(name="固定テンプレート削除", description="【運営専用】このチャンネルに設定されている固定テンプレートを削除します")
+    @is_admin()
+    async def sticky_template_delete(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        channel_id = interaction.channel_id
+        data = await database.get_sticky_template(channel_id)
+        if not data:
+            return await interaction.followup.send("❌ このチャンネルには固定テンプレートが設定されていません。", ephemeral=True)
+        
+        await database.delete_sticky_template(channel_id)
+        
+        if data["last_message_id"]:
+            try:
+                msg = await interaction.channel.fetch_message(data["last_message_id"])
+                await msg.delete()
+            except:
+                pass
+        
+        if data.get("last_text_message_id"):
+            try:
+                text_msg = await interaction.channel.fetch_message(data["last_text_message_id"])
+                await text_msg.delete()
+            except:
+                pass
+        await interaction.followup.send("✅ 固定テンプレートを削除しました。", ephemeral=True)
+
+    @AdminGroup.command(name="チャット消去", description="【運営・面接官専用】チャンネル内のメッセージを指定された件数分、一括削除します")
+    @is_admin_or_interviewer()
+    async def clear_chat(self, interaction: discord.Interaction, count: int):
+        if count <= 0:
+            return await interaction.response.send_message("1以上の件数を指定してください。", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        deleted = await interaction.channel.purge(limit=count)
+        await interaction.followup.send(f"🧹 メッセージを {len(deleted)} 件削除しました。", ephemeral=True)
+
+    @AdminGroup.command(name="手動給与", description="【運営専用】指定したユーザーに通貨を直接発行して付与します（最大10人まで）")
     @app_commands.describe(
         target1="付与先1",
         amount="1人あたりの金額",
@@ -99,35 +138,36 @@ class AdminCog(commands.Cog):
             if t not in valid_targets:
                 valid_targets.append(t)
                 
-        await it.response.defer()
+        await it.response.defer(ephemeral=True)
         
         for t in valid_targets:
             await database.add_balance(t.id, amount)
-            await it.followup.send(f"✅ {t.mention} に {amount} {config.CURRENCY_NAME} 付与しました。")
+            await it.followup.send(f"✅ {t.mention} に {amount} {config.CURRENCY_NAME} 付与しました。", ephemeral=True)
             await config.send_economy_log(
                 it.guild,
-                "💰 通貨付与",
+                "💰 通貨付与 (手動給与)",
                 f"管理者の {it.user.mention} が {t.mention} に **{amount} {config.CURRENCY_NAME}** を付与しました。",
                 user=it.user
             )
 
-    @AdminGroup.command(name="通貨没収", description="指定ユーザーから通貨を没収")
+    @AdminGroup.command(name="手動没収", description="【運営専用】指定したユーザーから通貨を直接没収します")
     @is_admin()
     async def remove(self, it, target: discord.Member, amount: int):
         await database.remove_balance(target.id, amount)
-        await it.response.send_message(f"✅ {target.mention} から {amount} {config.CURRENCY_NAME} 没収しました。")
+        await it.response.send_message(f"✅ {target.mention} から {amount} {config.CURRENCY_NAME} 没収しました。", ephemeral=True)
         await config.send_economy_log(
             it.guild,
-            "📉 通貨没収",
+            "📉 通貨没収 (手動没収)",
             f"管理者の {it.user.mention} が {target.mention} から **{amount} {config.CURRENCY_NAME}** を没収しました。",
             user=it.user,
             color=discord.Color.red()
         )
 
-    @AdminGroup.command(name="所持金リセット", description="所持金の初期化")
+    @AdminGroup.command(name="所持金リセット", description="【運営専用】指定したユーザーの所持金を初期化します")
     @app_commands.checks.has_permissions(administrator=True)
     async def rbal(self, it, user: discord.Member):
-        await database.reset_user_balance(user.id); await it.response.send_message("リセット完了", ephemeral=True)
+        await database.reset_user_balance(user.id)
+        await it.response.send_message("リセット完了", ephemeral=True)
         await config.send_economy_log(
             it.guild,
             "🔄 所持金リセット",
@@ -136,7 +176,52 @@ class AdminCog(commands.Cog):
             color=discord.Color.red()
         )
 
-    @AdminGroup.command(name="デバッグ_vc", description="【管理者用】一時部屋のDB登録状況を確認します")
+    @AdminGroup.command(name="一括初期給与", description="【運営専用】まだ初期給与（30000コイン）を受け取っていない全員に一括で発行します")
+    @is_admin()
+    async def batch_initial_issue(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        bot = self.bot
+        new_role = config.get_role_by_setting(bot, guild, "NEW_MEMBER_ROLE_ID", config.NEW_MEMBER_ROLE_NAME)
+        if not new_role:
+            return await interaction.followup.send(f"❌ 新規メンバーロールが設定されていないか見つかりません。", ephemeral=True)
+            
+        initial_coins = config.INITIAL_COINS
+        cur_name = config.CURRENCY_NAME
+        
+        issued_count = 0
+        issued_members = []
+        for member in new_role.members:
+            if member.bot: continue
+            
+            user_data = await database.get_user(member.id)
+            if not user_data.get("initial_issued", False):
+                await database.add_balance(member.id, initial_coins)
+                await database.set_initial_issued(member.id)
+                issued_count += 1
+                issued_members.append(f"{member.mention} (ID: {member.id})")
+                
+        await interaction.followup.send(f"✅ 未受け取りの {issued_count} 名に初期給与 **{initial_coins} {cur_name}** を発行しました！", ephemeral=True)
+
+        if issued_count > 0:
+            embed = discord.Embed(
+                title="🪙 一括初期給与 (運営)",
+                description="運営による一括初期給与が実行されました。",
+                color=discord.Color.gold(),
+                timestamp=discord.utils.utcnow()
+            )
+            embed.add_field(name="実行者", value=f"{interaction.user.mention} ({interaction.user.id})", inline=True)
+            embed.add_field(name="対象人数", value=f"{issued_count} 名", inline=True)
+            embed.add_field(name="発行総額", value=f"{issued_count * initial_coins:,} {cur_name}", inline=True)
+            
+            members_text = "\n".join(issued_members[:20])
+            if len(issued_members) > 20:
+                members_text += f"\n他 {len(issued_members) - 20} 名..."
+            embed.add_field(name="対象メンバー一覧 (最大20名)", value=members_text, inline=False)
+            
+            await config.send_log(interaction.guild, "economy", embed)
+
+    @AdminGroup.command(name="デバッグ_一時部屋", description="【運営専用】一時部屋のDB登録状況を確認します")
     @is_admin()
     async def debug_vc(self, it):
         pool = await database.get_pool()
@@ -154,36 +239,34 @@ class AdminCog(commands.Cog):
         
         await it.response.send_message(txt[:2000], ephemeral=True)
 
-    @AdminGroup.command(name="テンプレ作成", description="【管理者専用】現在のチャンネルに常設するテンプレートを作成します")
+    @AdminGroup.command(name="デバッグ用vc強制退室", description="【運営専用】指定したユーザーのVC接続セッションを強制的に終了させます（時間測定のバグ修正用）")
     @is_admin()
-    async def sticky_template_create(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(StickyTemplateModal())
-
-    @AdminGroup.command(name="テンプレ削除", description="【管理者専用】現在のチャンネルの常設テンプレートを削除します")
-    @is_admin()
-    async def sticky_template_delete(self, interaction: discord.Interaction):
+    @app_commands.describe(user="強制退室させるユーザー")
+    async def debug_vc_kick(self, interaction: discord.Interaction, user: discord.Member):
         await interaction.response.defer(ephemeral=True)
-        channel_id = interaction.channel_id
-        data = await database.get_sticky_template(channel_id)
-        if not data:
-            return await interaction.followup.send("❌ このチャンネルには常設テンプレートが設定されていません。", ephemeral=True)
+        session = self.bot.vc_sessions.pop(user.id, None)
+        if session:
+            await interaction.followup.send(f"✅ {user.display_name} のVCセッションを破棄しました。", ephemeral=True)
+        else:
+            await interaction.followup.send(f"⚠️ {user.display_name} はVCセッションを保持していませんでした。", ephemeral=True)
+
+    @AdminGroup.command(name="ランクリセット", description="【運営専用】ユーザーのレベル・経験値をリセットします")
+    @is_admin()
+    @app_commands.describe(user="リセットする特定のユーザー", all_players="サーバー全員をリセットする場合は『はい』を選択")
+    async def rank_reset(self, interaction: discord.Interaction, user: discord.Member = None, all_players: bool = False):
+        await interaction.response.defer(ephemeral=True)
         
-        await database.delete_sticky_template(channel_id)
-        
-        if data["last_message_id"]:
-            try:
-                msg = await interaction.channel.fetch_message(data["last_message_id"])
-                await msg.delete()
-            except:
-                pass
-        
-        if data.get("last_text_message_id"):
-            try:
-                text_msg = await interaction.channel.fetch_message(data["last_text_message_id"])
-                await text_msg.delete()
-            except:
-                pass
-        await interaction.followup.send("✅ 常設テンプレートを削除しました。", ephemeral=True)
+        if all_players:
+            p = await database.get_pool()
+            async with p.acquire() as conn:
+                await conn.execute('UPDATE users SET tc_xp = 0, tc_level = 1, vc_xp = 0, vc_level = 1')
+            await interaction.followup.send("✅ 全ユーザーのランクをリセットしました。", ephemeral=True)
+        elif user:
+            await database.reset_user_rank(user.id)
+            await interaction.followup.send(f"✅ {user.mention} のランクをリセットしました。", ephemeral=True)
+        else:
+            await interaction.followup.send("❌ エラー: ユーザーを指定するか、『全プレイヤー』に『はい』を選択してください。", ephemeral=True)
+
 
 async def setup(bot):
     cog = AdminCog(bot)
@@ -1363,8 +1446,9 @@ class BackToAdminPanelButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        bot = interaction.client
-        await update_main_admin_panel(interaction, bot)
+        view = BotSetupMainView(interaction.user)
+        embed = await view.build_embed(interaction.guild)
+        await interaction.edit_original_response(embed=embed, view=view)
 
 class ManageRankSettingsButton(discord.ui.Button):
     def __init__(self):
@@ -1727,12 +1811,7 @@ class PanelSetupView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
         self.add_item(PanelSelect())
-        self.add_item(ManageVCTriggersButton())
-        self.add_item(ManageLevelRolesButton())
-        self.add_item(ManageRoomPricesButton())
-        self.add_item(ManageLogSettingsButton())
-        self.add_item(ManageEvaluationSettingsButton())
-        self.add_item(ManageRankSettingsButton())
+
 
 # --- Bot初期設定インタラクティブUI ---
 
@@ -1769,44 +1848,142 @@ class BotSetupMainSelect(discord.ui.Select):
         await interaction.response.edit_message(embed=embed, view=view)
 
 class BotSetupMainView(discord.ui.View):
-    def __init__(self, user):
+    def __init__(self, user, bot=None):
         super().__init__(timeout=300)
         self.user = user
-        self.add_item(BotSetupMainSelect())
-
-    def build_embed(self, guild):
-        embed = discord.Embed(
-            title="⚙️ Bot初期設定・管理パネル",
-            description="Discord内の各種設定を調整します。選択メニューから項目を選んでください。",
-            color=0x2f3136
-        )
-        roles_text = (
-            f"• 管理者: {format_setting_status(guild, 'ADMIN_ROLE_IDS')}\n"
-            f"• 見習い・初級評価員: {format_setting_status(guild, 'EVALUATOR_TIER1_ROLE_IDS')}\n"
-            f"• 中級・上級評価員: {format_setting_status(guild, 'EVALUATOR_TIER2_ROLE_IDS')}\n"
-            f"• 特級・統括評価員: {format_setting_status(guild, 'EVALUATOR_TIER3_ROLE_IDS')}\n"
-            f"• 新規メンバー: {format_setting_status(guild, 'NEW_MEMBER_ROLE_ID')}\n"
-            f"• 入界待機者: {format_setting_status(guild, 'PENDING_MEMBER_ROLE_ID')}\n"
-            f"• 面接官: {format_setting_status(guild, 'INTERVIEWER_ROLE_IDS')}\n"
-            f"• 無料宿対象: {format_setting_status(guild, 'MAIN_SUB_MEMBER_ROLE_IDS')}\n"
-            f"• スタンプ統括: {format_setting_status(guild, 'EMBLEM_MANAGER_ROLE_ID')}\n"
-            f"• スタンプ制作: {format_setting_status(guild, 'EMBLEM_MASTER_ROLE_ID')}\n"
-            f"• 告解司祭: {format_setting_status(guild, 'CONFESSION_PRIEST_ROLE_ID')}\n"
-            f"• 司祭: {format_setting_status(guild, 'PRIEST_ROLE_ID')}\n"
-            f"• イベント管理: {format_setting_status(guild, 'EVENT_MANAGER_ROLE_IDS')}"
-        )
-        embed.add_field(name="👥 ロール設定", value=roles_text, inline=False)
+        if bot is None:
+            global _bot_instance
+            bot = _bot_instance
+        self.bot = bot
         
-        channels_text = (
-            f"• レベルアップ通知: {format_setting_status(guild, 'LEVEL_UP_CHANNEL_ID')}\n"
-            f"• VC作成トリガー: {format_setting_status(guild, 'CREATE_VC_CHANNEL_ID')}\n"
-            f"• 評価時間対象カテゴリ: {format_setting_status(guild, 'EVAL_TIME_CATEGORY_ID')}\n"
-            f"• 自己紹介部屋: {format_setting_status(guild, 'SELF_INTRO_CHANNEL_IDS')}\n"
-            f"• 見習い・初級フォーラム: {format_setting_status(guild, 'EVALUATION_FORUM_TIER1_IDS')}\n"
-            f"• 中級・上級フォーラム: {format_setting_status(guild, 'EVALUATION_FORUM_TIER2_IDS')}\n"
-            f"• 特級・統括フォーラム: {format_setting_status(guild, 'EVALUATION_FORUM_TIER3_IDS')}"
+        self.add_item(BotSetupMainSelect())
+        
+        btn_log = ManageLogSettingsButton()
+        btn_log.row = 1
+        self.add_item(btn_log)
+        
+        btn_rank = ManageRankSettingsButton()
+        btn_rank.row = 1
+        self.add_item(btn_rank)
+        
+        btn_level = ManageLevelRolesButton()
+        btn_level.row = 1
+        self.add_item(btn_level)
+        
+        btn_price = ManageRoomPricesButton()
+        btn_price.row = 1
+        self.add_item(btn_price)
+        
+        btn_vc = ManageVCTriggersButton()
+        btn_vc.row = 2
+        self.add_item(btn_vc)
+        
+        btn_eval = ManageEvaluationSettingsButton()
+        btn_eval.row = 2
+        self.add_item(btn_eval)
+
+    async def build_embed(self, guild):
+        bot = self.bot
+        log_settings = await database.get_all_log_settings(guild.id)
+        level_rewards = await database.get_level_role_rewards()
+        room_prices = await database.get_all_room_prices()
+        
+        embed = discord.Embed(
+            title="⚙️ ０番区bot 管理パネル",
+            description="Botの設定状況を確認・変更できます。下のセレクトメニューやボタンから項目を選択してください。",
+            color=discord.Color.blue()
         )
-        embed.add_field(name="📺 チャンネル・カテゴリー設定", value=channels_text, inline=False)
+        
+        roles_text = (
+            f"・管理者ロール: {format_setting_status(guild, 'ADMIN_ROLE_IDS', bot)}\n"
+            f"・仮(新規)メンバーロール: {format_setting_status(guild, 'NEW_MEMBER_ROLE_ID', bot)}\n"
+            f"・入界待機者ロール: {format_setting_status(guild, 'PENDING_MEMBER_ROLE_ID', bot)}\n"
+            f"・本/準メンバーロール: {format_setting_status(guild, 'MAIN_SUB_MEMBER_ROLE_IDS', bot)}\n"
+            f"・面接官ロール: {format_setting_status(guild, 'INTERVIEWER_ROLE_IDS', bot)}\n"
+        )
+        embed.add_field(name="👥 基本・管理権限設定", value=roles_text, inline=False)
+        
+        other_roles_text = (
+            f"・見習い・初級評価員ロール: {format_setting_status(guild, 'EVALUATOR_TIER1_ROLE_IDS', bot)}\n"
+            f"・中級・上級評価員ロール: {format_setting_status(guild, 'EVALUATOR_TIER2_ROLE_IDS', bot)}\n"
+            f"・特級・統括評価員ロール: {format_setting_status(guild, 'EVALUATOR_TIER3_ROLE_IDS', bot)}\n"
+            f"・スタンプ統括ロール: {format_setting_status(guild, 'EMBLEM_MANAGER_ROLE_ID', bot)}\n"
+            f"・スタンプ制作ロール: {format_setting_status(guild, 'EMBLEM_MASTER_ROLE_ID', bot)}\n"
+            f"・告解司祭 / 司祭ロール: {format_setting_status(guild, 'CONFESSION_PRIEST_ROLE_ID', bot)} / {format_setting_status(guild, 'PRIEST_ROLE_ID', bot)}\n"
+            f"・イベント管理ロール: {format_setting_status(guild, 'EVENT_MANAGER_ROLE_IDS', bot)}\n"
+        )
+        embed.add_field(name="🏷️ その他役職・役割ロール設定", value=other_roles_text, inline=False)
+        
+        log_names = {
+            "message_edit": "メッセージ編集",
+            "message_delete": "メッセージ削除",
+            "vc_join_leave": "VC参加・退出",
+            "member_join_leave": "メンバー入退",
+            "economy": "通貨・経済",
+            "interviewer": "面接官ログ"
+        }
+        log_text = ""
+        for log_type, ch_id in log_settings.items():
+            ch = guild.get_channel(ch_id)
+            mention = ch.mention if ch else f"未取得 (ID: {ch_id})"
+            log_text += f"・{log_names.get(log_type, log_type)} ➔ {mention}\n"
+        embed.add_field(name="📝 ログ出力設定", value=log_text or "設定されているログ出力はありません。", inline=False)
+        
+        rank_cfg = bot.get_rank_config(guild.id)
+        wl_ch = [guild.get_channel(cid).mention for cid in rank_cfg.get("whitelist", []) if guild.get_channel(cid)]
+        wl_cat = [guild.get_channel(cid).name for cid in rank_cfg.get("whitelist_categories", []) if guild.get_channel(cid)]
+        bl_ch = [guild.get_channel(cid).mention for cid in rank_cfg.get("blacklist", []) if guild.get_channel(cid)]
+        bl_cat = [guild.get_channel(cid).name for cid in rank_cfg.get("blacklist_categories", []) if guild.get_channel(cid)]
+        rank_text = (
+            f"・WL(対象)チャンネル: {', '.join(wl_ch) if wl_ch else 'なし'}\n"
+            f"・WL(対象)カテゴリー: {', '.join(wl_cat) if wl_cat else 'なし'}\n"
+            f"・BL(除外)チャンネル: {', '.join(bl_ch) if bl_ch else 'なし'}\n"
+            f"・BL(除外)カテゴリー: {', '.join(bl_cat) if bl_cat else 'なし'}\n"
+        )
+        embed.add_field(name="🏆 ランク対象設定", value=rank_text, inline=False)
+        
+        tc_rewards = [r for r in level_rewards if r["level_type"] == "tc"]
+        vc_rewards = [r for r in level_rewards if r["level_type"] == "vc"]
+        level_text = "**[💬 テキスト (TC)]**\n"
+        for r in sorted(tc_rewards, key=lambda x: x["level"]):
+            role = guild.get_role(r["role_id"])
+            mention = role.mention if role else f"未取得 (ID: {r['role_id']})"
+            level_text += f" ・Lv.{r['level']} ➔ {mention}\n"
+        if not tc_rewards: level_text += " ・設定なし\n"
+        
+        level_text += "**[🎙️ ボイス (VC)]**\n"
+        for r in sorted(vc_rewards, key=lambda x: x["level"]):
+            role = guild.get_role(r["role_id"])
+            mention = role.mention if role else f"未取得 (ID: {r['role_id']})"
+            level_text += f" ・Lv.{r['level']} ➔ {mention}\n"
+        if not vc_rewards: level_text += " ・設定なし\n"
+        embed.add_field(name="🎁 レベル到達ロール報酬設定", value=level_text, inline=False)
+        
+        cur_name = config.CURRENCY_NAME
+        init_coins = config.INITIAL_COINS
+        prices_text = (
+            f"・通貨単位名: **{cur_name}**\n"
+            f"・新規入界時発行額: **{init_coins:,} {cur_name}**\n"
+        )
+        for p in room_prices:
+            prices_text += f"・{p['room_type']} ({p['duration']}時間) ➔ **{p['price']:,} {cur_name}**\n"
+        embed.add_field(name="💰 経済・部屋価格設定", value=prices_text, inline=False)
+        
+        trigger_text = ""
+        for tid in bot.auto_vc_triggers:
+            ch = guild.get_channel(tid)
+            mention = ch.mention if ch else f"未取得 (ID: {tid})"
+            trigger_text += f"・{mention}\n"
+        embed.add_field(name=f"🔊 自動VCトリガー設定 (登録数: {len(bot.auto_vc_triggers)}個)", value=trigger_text or "登録されているトリガーはありません。", inline=False)
+        
+        eval_cfg = bot.get_evaluation_config(guild.id)
+        forums = [guild.get_channel(fid).mention for fid in eval_cfg["forum_channel_ids"] if guild.get_channel(fid)]
+        intros = [guild.get_channel(cid).mention for cid in eval_cfg["self_intro_channel_ids"] if guild.get_channel(cid)]
+        eval_text = (
+            f"・評価フォーラム: {', '.join(forums) if forums else 'なし'}\n"
+            f"・対象自己紹介チャンネル: {', '.join(intros) if intros else 'なし'}\n"
+        )
+        embed.add_field(name="📋 自己紹介・評価設定", value=eval_text, inline=False)
         return embed
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -1914,7 +2091,7 @@ class BotSetupConfigureView(discord.ui.View):
     @discord.ui.button(label="戻る", style=discord.ButtonStyle.secondary, emoji="⬅️")
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
         view = BotSetupMainView(self.user)
-        embed = view.build_embed(interaction.guild)
+        embed = await view.build_embed(interaction.guild)
         await interaction.response.edit_message(embed=embed, view=view)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
