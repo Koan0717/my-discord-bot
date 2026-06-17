@@ -98,10 +98,10 @@ class EmblemRequestModal(discord.ui.Modal, title='スタンプ制作依頼'):
             await interaction.followup.send(f"エラーが発生しました: {e}", ephemeral=True)
 
 class EmblemSelectView(discord.ui.View):
-    def __init__(self, guild):
+    def __init__(self, bot, guild):
         super().__init__(timeout=60)
-        master_role = config.get_role_by_setting(None, guild, "EMBLEM_MASTER_ROLE_ID", config.EMBLEM_MASTER_ROLE_NAME)
-        manager_role = config.get_role_by_setting(None, guild, "EMBLEM_MANAGER_ROLE_ID", config.EMBLEM_MANAGER_ROLE_NAME)
+        master_role = config.get_role_by_setting(bot, guild, "EMBLEM_MASTER_ROLE_ID", config.EMBLEM_MASTER_ROLE_NAME)
+        manager_role = config.get_role_by_setting(bot, guild, "EMBLEM_MANAGER_ROLE_ID", config.EMBLEM_MANAGER_ROLE_NAME)
         
         member_set = set()
         if master_role: member_set.update(master_role.members)
@@ -160,7 +160,7 @@ class EmblemRequestPanelView(discord.ui.View):
             await interaction.response.send_message("現在、依頼可能な製作者がいません", ephemeral=True)
             return
             
-        view = EmblemSelectView(interaction.guild)
+        view = EmblemSelectView(interaction.client, interaction.guild)
         # SelectOptionなどを正しくバインド
         await interaction.response.send_message("担当者を選択してください：", view=view, ephemeral=True)
 
@@ -244,10 +244,10 @@ class ConfessionRequestModal(discord.ui.Modal, title='告解・相談依頼'):
             await interaction.followup.send(f"エラーが発生しました: {e}", ephemeral=True)
 
 class ConfessionSelectView(discord.ui.View):
-    def __init__(self, guild):
+    def __init__(self, bot, guild):
         super().__init__(timeout=60)
-        priest1_role = config.get_role_by_setting(None, guild, "CONFESSION_PRIEST_ROLE_ID", config.CONFESSION_PRIEST_ROLE_NAME)
-        priest2_role = config.get_role_by_setting(None, guild, "PRIEST_ROLE_ID", config.PRIEST_ROLE_NAME)
+        priest1_role = config.get_role_by_setting(bot, guild, "CONFESSION_PRIEST_ROLE_ID", config.CONFESSION_PRIEST_ROLE_NAME)
+        priest2_role = config.get_role_by_setting(bot, guild, "PRIEST_ROLE_ID", config.PRIEST_ROLE_NAME)
         
         member_set = set()
         if priest1_role: member_set.update(priest1_role.members)
@@ -304,8 +304,8 @@ class ConfessionRequestPanelView(discord.ui.View):
         if not options:
             await interaction.response.send_message("現在、対応可能な司祭がいません", ephemeral=True)
             return
-
-        view = ConfessionSelectView(interaction.guild)
+            
+        view = ConfessionSelectView(interaction.client, interaction.guild)
         await interaction.response.send_message("担当者を選択してください：", view=view, ephemeral=True)
 
 
