@@ -33,6 +33,8 @@ class EconomyBot(commands.Bot):
         self.rank_settings = {}          # {guild_id: {"whitelist": set, "blacklist": set, "categories": set}}
         self.spam_tracker = {}           # {user_id: {"last_content": str, "content_count": int, "everyone_count": int, "last_time": datetime}}
         self.bot_settings = {}
+        self.invite_cache = {}           # {guild_id: {invite_code: uses}}
+
 
     def get_evaluation_config(self, guild_id: int) -> dict:
         if guild_id not in self.evaluation_settings:
