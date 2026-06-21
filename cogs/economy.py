@@ -60,9 +60,6 @@ class Economy(commands.Cog):
             if t.id == interaction.user.id:
                 await interaction.response.send_message("自分自身は送金先に含めることができません。", ephemeral=True)
                 return
-            if t.bot:
-                await interaction.response.send_message("Botは送金先に含めることができません。", ephemeral=True)
-                return
             if t not in valid_targets:
                 valid_targets.append(t)
                 
