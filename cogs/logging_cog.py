@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 import datetime
+import asyncio
 import database
 import config
 import os
@@ -211,6 +212,8 @@ class Logging(commands.Cog):
             if changed:
                 await database.set_evaluation_settings(channel.guild.id, list(cfg["forum_channel_ids"]), list(cfg["self_intro_channel_ids"]))
 
+
+
     @commands.Cog.listener()
     async def on_member_update(self, before, after):
         human_role = config.get_role_by_setting(self.bot, after.guild, "NEW_MEMBER_ROLE_ID", config.NEW_MEMBER_ROLE_NAME)
@@ -226,6 +229,71 @@ class Logging(commands.Cog):
                 end_time = start_time + datetime.timedelta(days=14)
                 await database.add_evaluation_period(after.id, start_time, end_time)
                 print(f"[Evaluation] Started for {after.display_name}: {start_time} to {end_time}")
+
+        # タイムアウト検知ロジック
+        guild = after.guild
+        if before.timed_out_until != after.timed_out_until:
+            now = datetime.datetime.now(config.JST)
+            
+            if after.timed_out_until and after.timed_out_until > now:
+                await asyncio.sleep(1)
+                moderator = None
+                reason = "理由なし"
+                try:
+                    async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
+                        if entry.target.id == after.id:
+                            if hasattr(entry.after, "timed_out_until") and entry.after.timed_out_until:
+                                moderator = entry.user
+                                if entry.reason:
+                                    reason = entry.reason
+                                break
+                except Exception as e:
+                    print(f"[Timeout Log] Failed to fetch audit log: {e}")
+                
+                embed = discord.Embed(
+                    description=f"{after.mention} がタイムアウトされました。",
+                    color=discord.Color.from_rgb(245, 166, 35)
+                )
+                embed.set_author(name=after.name, icon_url=after.display_avatar.url)
+                embed.set_thumbnail(url=after.display_avatar.url)
+                
+                duration_val = f"{self.format_relative_time(after.timed_out_until)} (期限: {self.format_absolute_time(after.timed_out_until)})"
+                embed.add_field(name="期間", value=duration_val, inline=False)
+                embed.add_field(name="理由", value=reason, inline=True)
+                embed.add_field(name="実行者", value=moderator.mention if moderator else "不明", inline=True)
+                
+                embed.set_footer(text=f"🟡 {guild.name} • {self.format_footer_time(now)}")
+                embed.timestamp = now
+                await config.send_log(guild, "member_join_leave", embed)
+            
+            elif before.timed_out_until and (not after.timed_out_until or after.timed_out_until <= now):
+                await asyncio.sleep(1)
+                moderator = None
+                reason = "理由なし"
+                try:
+                    async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
+                        if entry.target.id == after.id:
+                            if hasattr(entry.before, "timed_out_until") and entry.before.timed_out_until and (not hasattr(entry.after, "timed_out_until") or not entry.after.timed_out_until):
+                                moderator = entry.user
+                                if entry.reason:
+                                    reason = entry.reason
+                                break
+                except Exception as e:
+                    print(f"[Timeout Log] Failed to fetch audit log: {e}")
+                
+                embed = discord.Embed(
+                    description=f"{after.mention} のタイムアウトが解除されました。",
+                    color=discord.Color.from_rgb(87, 242, 135)
+                )
+                embed.set_author(name=after.name, icon_url=after.display_avatar.url)
+                embed.set_thumbnail(url=after.display_avatar.url)
+                
+                embed.add_field(name="理由", value=reason, inline=True)
+                embed.add_field(name="実行者", value=moderator.mention if moderator else "不明", inline=True)
+                
+                embed.set_footer(text=f"🟢 {guild.name} • {self.format_footer_time(now)}")
+                embed.timestamp = now
+                await config.send_log(guild, "member_join_leave", embed)
 
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
@@ -294,37 +362,242 @@ class Logging(commands.Cog):
         
         await config.send_log(guild, "message_delete", embed)
 
+    # --- 日時フォーマット用ヘルパー ---
+    def format_relative_time(self, dt: datetime.datetime) -> str:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        diff = now - dt
+        
+        years = now.year - dt.year
+        months = now.month - dt.month
+        if months < 0:
+            years -= 1
+            months += 12
+            
+        if years > 0:
+            return f"{years}年前"
+        if months > 0:
+            return f"{months}ヶ月前"
+            
+        days = diff.days
+        if days > 0:
+            return f"{days}日前"
+            
+        hours = diff.seconds // 3600
+        if hours > 0:
+            return f"{hours}時間前"
+            
+        minutes = (diff.seconds % 3600) // 60
+        if minutes > 0:
+            return f"{minutes}分前"
+            
+        return f"{diff.seconds}秒前"
+
+    def format_absolute_time(self, dt: datetime.datetime) -> str:
+        dt_jst = dt.astimezone(config.JST)
+        weekday_ja = ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"][dt_jst.weekday()]
+        return f"{dt_jst.year}年{dt_jst.month}月{dt_jst.day}日 {weekday_ja} {dt_jst.hour}:{dt_jst.minute:02d}"
+
+    def format_footer_time(self, dt: datetime.datetime) -> str:
+        dt_jst = dt.astimezone(config.JST)
+        now_jst = datetime.datetime.now(config.JST)
+        if dt_jst.date() == now_jst.date():
+            return f"今日 {dt_jst.strftime('%H:%M')}"
+        elif (now_jst.date() - dt_jst.date()).days == 1:
+            return f"昨日 {dt_jst.strftime('%H:%M')}"
+        else:
+            return dt_jst.strftime("%Y/%m/%d %H:%M")
+
+    # --- 招待リンクキャッシュ管理用ヘルパー ---
+    async def update_invite_cache(self, guild: discord.Guild):
+        if not guild.me.guild_permissions.manage_guild:
+            return
+        try:
+            invites = await guild.invites()
+            self.bot.invite_cache[guild.id] = {invite.code: invite.uses for invite in invites}
+            if guild.vanity_url_code:
+                try:
+                    vanity = await guild.vanity_invite()
+                    self.bot.invite_cache[guild.id]["vanity"] = vanity.uses
+                except:
+                    pass
+        except Exception as e:
+            print(f"[Invite Cache] Failed to update cache for guild {guild.id}: {e}")
+
+    async def find_used_invite(self, guild: discord.Guild):
+        if guild.id not in self.bot.invite_cache:
+            await self.update_invite_cache(guild)
+            return None
+            
+        old_cache = self.bot.invite_cache[guild.id]
+        new_invites = {}
+        used_invite = None
+        
+        if guild.me.guild_permissions.manage_guild:
+            try:
+                invites = await guild.invites()
+                for invite in invites:
+                    new_invites[invite.code] = invite.uses
+                    if invite.uses > old_cache.get(invite.code, 0):
+                        used_invite = invite
+                
+                if guild.vanity_url_code:
+                    try:
+                        vanity = await guild.vanity_invite()
+                        new_invites["vanity"] = vanity.uses
+                        if vanity.uses > old_cache.get("vanity", 0):
+                            class VanityInvite:
+                                code = guild.vanity_url_code
+                                uses = vanity.uses
+                                inviter = None
+                            used_invite = VanityInvite()
+                    except:
+                        pass
+                
+                self.bot.invite_cache[guild.id] = new_invites
+            except Exception as e:
+                print(f"[Invite Cache] Error matching invite: {e}")
+                
+        return used_invite
+
+    # --- 招待キャッシュ同期リスナー ---
+    @commands.Cog.listener()
+    async def on_ready(self):
+        for guild in self.bot.guilds:
+            await self.update_invite_cache(guild)
+        print("[Invite Cache] Initialized invite cache for all guilds.")
+
+    @commands.Cog.listener()
+    async def on_guild_join(self, guild):
+        await self.update_invite_cache(guild)
+
+    @commands.Cog.listener()
+    async def on_invite_create(self, invite):
+        guild = invite.guild
+        if guild.id not in self.bot.invite_cache:
+            self.bot.invite_cache[guild.id] = {}
+        self.bot.invite_cache[guild.id][invite.code] = invite.uses
+
+    @commands.Cog.listener()
+    async def on_invite_delete(self, invite):
+        guild = invite.guild
+        if guild.id in self.bot.invite_cache:
+            self.bot.invite_cache[guild.id].pop(invite.code, None)
+
+    # --- イベントリスナー ---
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         guild = member.guild
-        embed = discord.Embed(
-            title="📥 メンバー参加",
-            description=f"{member.mention} がサーバーに参加しました。",
-            color=discord.Color.green(),
-            timestamp=datetime.datetime.now(config.JST)
-        )
-        embed.set_author(name=f"{member} (ID: {member.id})", icon_url=member.display_avatar.url)
         
-        created_at = member.created_at.astimezone(config.JST)
-        embed.add_field(name="アカウント作成日", value=created_at.strftime("%Y/%m/%d %H:%M:%S"), inline=False)
+        invite = await self.find_used_invite(guild)
+        invite_code_val = "不明"
+        inviter_val = "不明"
+        if invite:
+            invite_code_val = f"{invite.code} (使用回数: {invite.uses}回)"
+            if invite.inviter:
+                inviter_val = invite.inviter.mention
+            elif invite.code == guild.vanity_url_code:
+                inviter_val = "特別リンク（バニティURL）"
+        
+        embed = discord.Embed(
+            description=f"{member.mention} がサーバーに参加しました",
+            color=discord.Color.from_rgb(87, 242, 135)
+        )
+        embed.set_author(name=member.name, icon_url=member.display_avatar.url)
+        embed.set_thumbnail(url=member.display_avatar.url)
+        
+        created_val = f"{self.format_relative_time(member.created_at)}\n{self.format_absolute_time(member.created_at)}"
+        embed.add_field(name="アカウントの年齢", value=created_val, inline=False)
+        
+        embed.add_field(name="招待コード", value=invite_code_val, inline=True)
+        embed.add_field(name="招待者", value=inviter_val, inline=True)
+        
+        now = datetime.datetime.now(config.JST)
+        embed.set_footer(text=f"🟢 {guild.name} • {self.format_footer_time(now)}")
+        embed.timestamp = now
         
         await config.send_log(guild, "member_join_leave", embed)
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
         guild = member.guild
+        
         embed = discord.Embed(
-            title="📤 メンバー退出",
-            description=f"{member.mention} がサーバーから退出しました。",
-            color=discord.Color.red(),
-            timestamp=datetime.datetime.now(config.JST)
+            description=f"{member.mention} がサーバーから退出しました",
+            color=discord.Color.from_rgb(237, 66, 69)
         )
-        embed.set_author(name=f"{member} (ID: {member.id})", icon_url=member.display_avatar.url)
+        embed.set_author(name=member.name, icon_url=member.display_avatar.url)
+        embed.set_thumbnail(url=member.display_avatar.url)
         
         if member.joined_at:
-            joined_at = member.joined_at.astimezone(config.JST)
-            embed.add_field(name="サーバー参加日", value=joined_at.strftime("%Y/%m/%d %H:%M:%S"), inline=False)
+            joined_val = f"{self.format_relative_time(member.joined_at)}前 (滞在期間)\n{self.format_absolute_time(member.joined_at)}"
+        else:
+            joined_val = "不明"
+        embed.add_field(name="サーバー参加日", value=joined_val, inline=False)
+        
+        now = datetime.datetime.now(config.JST)
+        embed.set_footer(text=f"🔴 {guild.name} • {self.format_footer_time(now)}")
+        embed.timestamp = now
+        
+        await config.send_log(guild, "member_join_leave", embed)
+
+    @commands.Cog.listener()
+    async def on_member_ban(self, guild, user):
+        await asyncio.sleep(1)
+        moderator = None
+        reason = "理由なし"
+        try:
+            async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.ban):
+                if entry.target.id == user.id:
+                    moderator = entry.user
+                    if entry.reason:
+                        reason = entry.reason
+                    break
+        except Exception as e:
+            print(f"[Ban Log] Failed to fetch audit log: {e}")
             
+        embed = discord.Embed(
+            description=f"{user.mention} がサーバーからBANされました。",
+            color=discord.Color.from_rgb(237, 66, 69)
+        )
+        embed.set_author(name=user.name, icon_url=user.display_avatar.url)
+        embed.set_thumbnail(url=user.display_avatar.url)
+        
+        embed.add_field(name="理由", value=reason, inline=True)
+        embed.add_field(name="実行者", value=moderator.mention if moderator else "不明", inline=True)
+        
+        now = datetime.datetime.now(config.JST)
+        embed.set_footer(text=f"🔴 {guild.name} • {self.format_footer_time(now)}")
+        embed.timestamp = now
+        await config.send_log(guild, "member_join_leave", embed)
+
+    @commands.Cog.listener()
+    async def on_member_unban(self, guild, user):
+        await asyncio.sleep(1)
+        moderator = None
+        reason = "理由なし"
+        try:
+            async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.unban):
+                if entry.target.id == user.id:
+                    moderator = entry.user
+                    if entry.reason:
+                        reason = entry.reason
+                    break
+        except Exception as e:
+            print(f"[Unban Log] Failed to fetch audit log: {e}")
+            
+        embed = discord.Embed(
+            description=f"{user.mention} のBANが解除されました。",
+            color=discord.Color.from_rgb(87, 242, 135)
+        )
+        embed.set_author(name=user.name, icon_url=user.display_avatar.url)
+        embed.set_thumbnail(url=user.display_avatar.url)
+        
+        embed.add_field(name="理由", value=reason, inline=True)
+        embed.add_field(name="実行者", value=moderator.mention if moderator else "不明", inline=True)
+        
+        now = datetime.datetime.now(config.JST)
+        embed.set_footer(text=f"🟢 {guild.name} • {self.format_footer_time(now)}")
+        embed.timestamp = now
         await config.send_log(guild, "member_join_leave", embed)
 
 async def setup(bot):
