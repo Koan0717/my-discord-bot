@@ -39,22 +39,20 @@ class Logging(commands.Cog):
         user_id = message.author.id
         now = datetime.datetime.now(config.JST)
 
-        # 2. 荒らし対策: 連続同じメッセージ、@everyone/メンションスパム、招待URL連投
+        # 2. 荒らし対策: 連続同じメッセージ、@everyone/URLスパム、メンションスパム
         if isinstance(message.author, discord.Member):
             user_tracker = self.bot.spam_tracker.setdefault(user_id, {
                 "last_content": None,
                 "content_count": 0,
-                "everyone_count": 0,
-                "invite_count": 0,
+                "everyone_url_count": 0,
                 "mention_count": 0,
                 "last_time": now
             })
 
-            # 60秒以上経過していればリセット
-            if (now - user_tracker["last_time"]).total_seconds() > 60:
+            # 3秒以上経過していればリセット
+            if (now - user_tracker["last_time"]).total_seconds() > 3:
                 user_tracker["content_count"] = 0
-                user_tracker["everyone_count"] = 0
-                user_tracker["invite_count"] = 0
+                user_tracker["everyone_url_count"] = 0
                 user_tracker["mention_count"] = 0
 
             user_tracker["last_time"] = now
@@ -69,22 +67,17 @@ class Logging(commands.Cog):
                 user_tracker["last_content"] = message.content
                 user_tracker["content_count"] = 1
 
-            # @everyone or @here の検知 (他のメッセージを挟んでも60秒以内の累計でカウント)
-            if message.mention_everyone:
-                user_tracker["everyone_count"] += 1
-                if user_tracker["everyone_count"] >= 3:
-                    timeout_reason = "短時間に@everyoneメンションを複数回送信したため"
-
-            # Discord招待URLの検知 (discord.gg/ などの招待リンク)
+            # @everyone / @here メンション、またはDiscord招待URL送信の検知 (3秒以内累計5回以上)
             import re
             DISCORD_INVITE_PATTERN = re.compile(
                 r'(?:https?://)?(?:www\.)?(?:discord\.gg|discord\.com/invite|discordapp\.com/invite)/[a-zA-Z0-9-]+',
                 re.IGNORECASE
             )
-            if DISCORD_INVITE_PATTERN.search(message.content):
-                user_tracker["invite_count"] += 1
-                if user_tracker["invite_count"] >= 3:
-                    timeout_reason = "連続でDiscordの招待リンクを送信したため"
+            
+            if message.mention_everyone or DISCORD_INVITE_PATTERN.search(message.content):
+                user_tracker["everyone_url_count"] += 1
+                if user_tracker["everyone_url_count"] >= 5:
+                    timeout_reason = "短時間にDiscord招待リンクまたは@everyoneメンションを複数回送信したため"
 
             # メンションスパムの検知 (ユーザーメンション + 役職メンション)
             msg_mentions = len(message.mentions) + len(message.role_mentions)
@@ -110,8 +103,7 @@ class Logging(commands.Cog):
                     await message.channel.send(f"🚨 {message.author.mention} がスパム行為（{timeout_reason}）によりタイムアウトされました。")
                     
                     user_tracker["content_count"] = 0
-                    user_tracker["everyone_count"] = 0
-                    user_tracker["invite_count"] = 0
+                    user_tracker["everyone_url_count"] = 0
                     user_tracker["mention_count"] = 0
                     return # スパムなら処理終了
                 except Exception as e:
