@@ -139,11 +139,11 @@ class AdminCog(commands.Cog):
             if t not in valid_targets:
                 valid_targets.append(t)
                 
-        await it.response.defer(ephemeral=True)
+        await it.response.defer()
         
         for t in valid_targets:
             await database.add_balance(t.id, amount)
-            await it.followup.send(f"✅ {t.mention} に {amount} {config.CURRENCY_NAME} 付与しました。", ephemeral=True)
+            await it.followup.send(f"✅ {t.mention} に {amount} {config.CURRENCY_NAME} 付与しました。")
             await config.send_economy_log(
                 it.guild,
                 "💰 通貨付与 (手動給与)",
