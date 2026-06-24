@@ -11,7 +11,7 @@ from cogs.rooms import MainInnPanelView, TempInnPanelView, LuxuryInnPanelView, C
 from cogs.gambling import ChinchiroView, CoinflipView, SlotView, BlackjackView, RouletteView
 from cogs.interview import InterviewPanelView
 from cogs.tickets import EmblemRequestPanelView, ConfessionRequestPanelView, TicketControlView, InquiryRequestPanelView, CustomTicketPanelView
-from cogs.admin import PanelSetupView
+from cogs.admin import PanelSetupView, VCTriggerPanelView
 from cogs.logging_cog import AnonymousChatPanelView
 
 load_dotenv()
@@ -126,6 +126,7 @@ class EconomyBot(commands.Bot):
         self.add_view(InquiryRequestPanelView())
         self.add_view(AnonymousChatPanelView())
         self.add_view(CustomTicketPanelView())
+        self.add_view(VCTriggerPanelView())
 
         # Cogsのロード
         cogs = [
