@@ -1479,6 +1479,119 @@ class RankSettingsConfigView(discord.ui.View):
         self.add_item(ClearBlCategoriesButton())
         self.add_item(BackToAdminPanelButton(row=4))
 
+# --- 荒らし対策設定UIコンポーネント ---
+class AntigriefCategorySelect(discord.ui.ChannelSelect):
+    def __init__(self):
+        super().__init__(placeholder="対象に追加するカテゴリー...", channel_types=[discord.ChannelType.category], min_values=1, max_values=1, row=0)
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        bot = interaction.client
+        cat = self.values[0]
+        await database.update_antigrief_settings_list(interaction.guild.id, "categories", cat.id, "add")
+        await bot.fetch_and_cache_antigrief_config(interaction.guild.id)
+        await update_antigrief_settings_config_view(interaction, bot)
+
+class AntigriefChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self):
+        super().__init__(placeholder="対象に追加するチャンネル...", channel_types=[discord.ChannelType.text], min_values=1, max_values=1, row=1)
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        bot = interaction.client
+        chan = self.values[0]
+        await database.update_antigrief_settings_list(interaction.guild.id, "channels", chan.id, "add")
+        await bot.fetch_and_cache_antigrief_config(interaction.guild.id)
+        await update_antigrief_settings_config_view(interaction, bot)
+
+class AntigriefExemptRoleSelect(discord.ui.RoleSelect):
+    def __init__(self):
+        super().__init__(placeholder="免除に追加するロール...", min_values=1, max_values=1, row=2)
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        bot = interaction.client
+        role = self.values[0]
+        await database.update_antigrief_settings_list(interaction.guild.id, "exempt_roles", role.id, "add")
+        await bot.fetch_and_cache_antigrief_config(interaction.guild.id)
+        await update_antigrief_settings_config_view(interaction, bot)
+
+class ClearAntigriefCategoriesButton(discord.ui.Button):
+    def __init__(self): super().__init__(label="対象カテゴリ消去", style=discord.ButtonStyle.danger, row=3)
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        bot = interaction.client
+        await database.clear_antigrief_settings_field(interaction.guild.id, "target_category_ids")
+        await bot.fetch_and_cache_antigrief_config(interaction.guild.id)
+        await update_antigrief_settings_config_view(interaction, bot)
+
+class ClearAntigriefChannelsButton(discord.ui.Button):
+    def __init__(self): super().__init__(label="対象チャンネル消去", style=discord.ButtonStyle.danger, row=3)
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        bot = interaction.client
+        await database.clear_antigrief_settings_field(interaction.guild.id, "target_channel_ids")
+        await bot.fetch_and_cache_antigrief_config(interaction.guild.id)
+        await update_antigrief_settings_config_view(interaction, bot)
+
+class ClearAntigriefExemptRolesButton(discord.ui.Button):
+    def __init__(self): super().__init__(label="免除ロール消去", style=discord.ButtonStyle.danger, row=3)
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        bot = interaction.client
+        await database.clear_antigrief_settings_field(interaction.guild.id, "exempt_role_ids")
+        await bot.fetch_and_cache_antigrief_config(interaction.guild.id)
+        await update_antigrief_settings_config_view(interaction, bot)
+
+class AntigriefSettingsConfigView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=180)
+        self.add_item(AntigriefCategorySelect())
+        self.add_item(AntigriefChannelSelect())
+        self.add_item(AntigriefExemptRoleSelect())
+        self.add_item(ClearAntigriefCategoriesButton())
+        self.add_item(ClearAntigriefChannelsButton())
+        self.add_item(ClearAntigriefExemptRolesButton())
+        self.add_item(BackToAdminPanelButton(row=4))
+
+async def update_antigrief_settings_config_view(interaction: discord.Interaction, bot):
+    guild = interaction.guild
+    cfg = await database.get_antigrief_settings(guild.id)
+    embed = discord.Embed(
+        title="⚙️ 荒らし対策 対象・免除設定",
+        description="荒らし対策システムを適用する対象（カテゴリー/チャンネル）および免除するロールを設定します。\n"
+                    "・対象を設定しない場合、**サーバー全体（すべてのチャンネル）が保護対象**となります。\n"
+                    "・対象を設定した場合、設定されたカテゴリー/チャンネルのみで検知が有効化されます。\n"
+                    "・免除ロールに指定されたメンバーは、検知チェックをバイパス（無視）します。",
+        color=discord.Color.blue()
+    )
+    
+    target_cats = [guild.get_channel(cid).name for cid in cfg.get("categories", []) if guild.get_channel(cid)]
+    target_chs = [guild.get_channel(cid).mention for cid in cfg.get("channels", []) if guild.get_channel(cid)]
+    exempt_roles = [guild.get_role(rid).mention for rid in cfg.get("exempt_roles", []) if guild.get_role(rid)]
+    
+    embed.add_field(name="対象カテゴリー", value=", ".join(target_cats) if target_cats else "サーバー全体 (全カテゴリー)", inline=False)
+    embed.add_field(name="対象チャンネル", value=", ".join(target_chs) if target_chs else "サーバー全体 (全チャンネル)", inline=False)
+    embed.add_field(name="免除ロール", value=", ".join(exempt_roles) if exempt_roles else "なし", inline=False)
+    
+    view = AntigriefSettingsConfigView()
+    try:
+        await interaction.response.edit_message(embed=embed, view=view)
+    except discord.InteractionResponded:
+        await interaction.edit_original_response(embed=embed, view=view)
+
+class ManageAntigriefSettingsButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="荒らし対策を設定",
+            style=discord.ButtonStyle.secondary,
+            emoji="🚨",
+            custom_id="persistent_admin_manage_antigrief_settings_btn"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not config.has_admin_role(interaction.client, interaction.user) and not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("この操作を実行する権限がありません（運営専用）。", ephemeral=True)
+        bot = interaction.client
+        await update_antigrief_settings_config_view(interaction, bot)
+
 # --- パネル設置メインパネル ---
 
 async def update_main_admin_panel(interaction: discord.Interaction, bot):
@@ -1651,6 +1764,29 @@ async def update_main_admin_panel(interaction: discord.Interaction, bot):
         ),
         inline=False
     )
+
+    # 荒らし対策設定
+    antigrief_cfg = bot.get_antigrief_config(interaction.guild_id)
+    ag_categories = [interaction.guild.get_channel(cid).name for cid in antigrief_cfg.get("categories", []) if interaction.guild.get_channel(cid)]
+    ag_channels = [interaction.guild.get_channel(cid).mention for cid in antigrief_cfg.get("channels", []) if interaction.guild.get_channel(cid)]
+    ag_exempt_roles = [interaction.guild.get_role(rid).mention for rid in antigrief_cfg.get("exempt_roles", []) if interaction.guild.get_role(rid)]
+    
+    target_scope = ""
+    if not ag_categories and not ag_channels:
+        target_scope = "サーバー全体 (すべてのチャンネルとカテゴリー)"
+    else:
+        scopes = []
+        if ag_categories:
+            scopes.append(f"対象カテゴリー: {', '.join(ag_categories)}")
+        if ag_channels:
+            scopes.append(f"対象チャンネル: {', '.join(ag_channels)}")
+        target_scope = "\n".join(scopes)
+
+    antigrief_text = (
+        f"・適用対象:\n{target_scope}\n"
+        f"・免除ロール: {', '.join(ag_exempt_roles) if ag_exempt_roles else 'なし'}"
+    )
+    embed.add_field(name="🚨 荒らし対策設定", value=antigrief_text, inline=False)
 
     view = PanelSetupView()
     if interaction.response.is_done():
@@ -1899,6 +2035,10 @@ class BotSetupMainView(discord.ui.View):
         btn_eval = ManageEvaluationSettingsButton()
         btn_eval.row = 2
         self.add_item(btn_eval)
+        
+        btn_antigrief = ManageAntigriefSettingsButton()
+        btn_antigrief.row = 2
+        self.add_item(btn_antigrief)
 
     async def build_embed(self, guild):
         bot = self.bot
@@ -2002,6 +2142,29 @@ class BotSetupMainView(discord.ui.View):
             f"・対象自己紹介チャンネル: {', '.join(intros) if intros else 'なし'}\n"
         )
         embed.add_field(name="📋 自己紹介・評価設定", value=eval_text, inline=False)
+        
+        antigrief_cfg = bot.get_antigrief_config(guild.id)
+        ag_categories = [guild.get_channel(cid).name for cid in antigrief_cfg.get("categories", []) if guild.get_channel(cid)]
+        ag_channels = [guild.get_channel(cid).mention for cid in antigrief_cfg.get("channels", []) if guild.get_channel(cid)]
+        ag_exempt_roles = [guild.get_role(rid).mention for rid in antigrief_cfg.get("exempt_roles", []) if guild.get_role(rid)]
+        
+        target_scope = ""
+        if not ag_categories and not ag_channels:
+            target_scope = "サーバー全体 (すべてのチャンネルとカテゴリー)"
+        else:
+            scopes = []
+            if ag_categories:
+                scopes.append(f"対象カテゴリー: {', '.join(ag_categories)}")
+            if ag_channels:
+                scopes.append(f"対象チャンネル: {', '.join(ag_channels)}")
+            target_scope = "\n".join(scopes)
+
+        antigrief_text = (
+            f"・適用対象:\n{target_scope}\n"
+            f"・免除ロール: {', '.join(ag_exempt_roles) if ag_exempt_roles else 'なし'}"
+        )
+        embed.add_field(name="🚨 荒らし対策設定", value=antigrief_text, inline=False)
+        
         return embed
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:

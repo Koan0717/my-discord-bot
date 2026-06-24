@@ -42,6 +42,25 @@ class Logging(commands.Cog):
 
         # 2. 荒らし対策: 連続同じメッセージ、@everyone/URLスパム、メンションスパム
         if isinstance(message.author, discord.Member):
+            # 適用対象および免除ロールの確認
+            guild = message.guild
+            if guild:
+                cfg = self.bot.get_antigrief_config(guild.id)
+                
+                # 免除ロールチェック
+                exempt_roles = cfg.get("exempt_roles", set())
+                author_role_ids = {role.id for role in message.author.roles}
+                if exempt_roles & author_role_ids:
+                    return
+                
+                # 対象カテゴリー/チャンネルチェック
+                target_categories = cfg.get("categories", set())
+                target_channels = cfg.get("channels", set())
+                if target_categories or target_channels:
+                    in_target_channel = message.channel.id in target_channels
+                    in_target_category = message.channel.category and message.channel.category.id in target_categories
+                    if not in_target_channel and not in_target_category:
+                        return
             user_tracker = self.bot.spam_tracker.setdefault(user_id, {
                 "last_content": None,
                 "content_count": 0,
