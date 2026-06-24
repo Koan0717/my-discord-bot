@@ -71,6 +71,14 @@ async def setup_db():
                 setting_value TEXT
             )
         ''')
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS antigrief_settings (
+                guild_id BIGINT PRIMARY KEY,
+                target_category_ids BIGINT[],
+                target_channel_ids BIGINT[],
+                exempt_role_ids BIGINT[]
+            )
+        ''')
         try:
             await conn.execute('ALTER TABLE inquiry_panels ADD COLUMN IF NOT EXISTS mention_role_ids BIGINT[]')
         except Exception as e:
@@ -797,6 +805,78 @@ async def get_interviewer_count(interviewer_id: int) -> int:
     async with p.acquire() as conn:
         val = await conn.fetchval('SELECT COUNT(*) FROM interviewer_logs WHERE interviewer_id = $1', interviewer_id)
         return val or 0
+
+# --- 荒らし対策設定管理用関数 ---
+async def get_antigrief_settings(guild_id: int) -> dict:
+    p = await get_pool()
+    async with p.acquire() as conn:
+        row = await conn.fetchrow('SELECT target_category_ids, target_channel_ids, exempt_role_ids FROM antigrief_settings WHERE guild_id = $1', guild_id)
+        if row:
+            return {
+                "categories": row["target_category_ids"] or [],
+                "channels": row["target_channel_ids"] or [],
+                "exempt_roles": row["exempt_role_ids"] or []
+            }
+        else:
+            await conn.execute('INSERT INTO antigrief_settings (guild_id, target_category_ids, target_channel_ids, exempt_role_ids) VALUES ($1, $2, $3, $4) ON CONFLICT (guild_id) DO NOTHING', guild_id, [], [], [])
+            return {"categories": [], "channels": [], "exempt_roles": []}
+
+async def get_all_antigrief_settings() -> list[dict]:
+    p = await get_pool()
+    async with p.acquire() as conn:
+        rows = await conn.fetch('SELECT guild_id, target_category_ids, target_channel_ids, exempt_role_ids FROM antigrief_settings')
+        return [
+            {
+                "guild_id": r["guild_id"],
+                "categories": r["target_category_ids"] or [],
+                "channels": r["target_channel_ids"] or [],
+                "exempt_roles": r["exempt_role_ids"] or []
+            }
+            for r in rows
+        ]
+
+async def set_antigrief_settings(guild_id: int, category_ids: list[int], channel_ids: list[int], exempt_role_ids: list[int]):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO antigrief_settings (guild_id, target_category_ids, target_channel_ids, exempt_role_ids)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (guild_id)
+            DO UPDATE SET target_category_ids = $2, target_channel_ids = $3, exempt_role_ids = $4
+        ''', guild_id, category_ids, channel_ids, exempt_role_ids)
+
+async def update_antigrief_settings_list(guild_id: int, field_type: str, item_id: int, action: str):
+    cfg = await get_antigrief_settings(guild_id)
+    if field_type == "categories":
+        target = cfg["categories"]
+    elif field_type == "channels":
+        target = cfg["channels"]
+    elif field_type == "exempt_roles":
+        target = cfg["exempt_roles"]
+    else:
+        return
+
+    if action == "add":
+        if item_id not in target:
+            target.append(item_id)
+    elif action == "remove":
+        if item_id in target:
+            target.remove(item_id)
+
+    await set_antigrief_settings(guild_id, cfg["categories"], cfg["channels"], cfg["exempt_roles"])
+
+async def clear_antigrief_settings_field(guild_id: int, field_name: str):
+    cfg = await get_antigrief_settings(guild_id)
+    if field_name == "target_category_ids":
+        cfg["categories"] = []
+    elif field_name == "target_channel_ids":
+        cfg["channels"] = []
+    elif field_name == "exempt_role_ids":
+        cfg["exempt_roles"] = []
+    else:
+        return
+
+    await set_antigrief_settings(guild_id, cfg["categories"], cfg["channels"], cfg["exempt_roles"])
 
 
 

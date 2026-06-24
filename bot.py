@@ -34,6 +34,7 @@ class EconomyBot(commands.Bot):
         self.spam_tracker = {}           # {user_id: {"last_content": str, "content_count": int, "everyone_count": int, "last_time": datetime}}
         self.bot_settings = {}
         self.invite_cache = {}           # {guild_id: {invite_code: uses}}
+        self.antigrief_settings_cache = {} # {guild_id: {"categories": set, "channels": set, "exempt_roles": set}}
 
 
     def get_evaluation_config(self, guild_id: int) -> dict:
@@ -57,9 +58,40 @@ class EconomyBot(commands.Bot):
             }
         return self.rank_settings[guild_id]
 
+    def get_antigrief_config(self, guild_id: int) -> dict:
+        if guild_id not in self.antigrief_settings_cache:
+            self.antigrief_settings_cache[guild_id] = {
+                "categories": set(),
+                "channels": set(),
+                "exempt_roles": set()
+            }
+        return self.antigrief_settings_cache[guild_id]
+
+    async def fetch_and_cache_antigrief_config(self, guild_id: int) -> dict:
+        data = await database.get_antigrief_settings(guild_id)
+        self.antigrief_settings_cache[guild_id] = {
+            "categories": set(data.get("categories", [])),
+            "channels": set(data.get("channels", [])),
+            "exempt_roles": set(data.get("exempt_roles", []))
+        }
+        return self.antigrief_settings_cache[guild_id]
+
+
     async def setup_hook(self):
         await database.setup_db()
         self.bot_settings = await database.load_settings()
+
+        # 荒らし対策設定のロード
+        try:
+            db_antigrief = await database.get_all_antigrief_settings()
+            for s in db_antigrief:
+                self.antigrief_settings_cache[s["guild_id"]] = {
+                    "categories": set(s.get("categories", [])),
+                    "channels": set(s.get("channels", [])),
+                    "exempt_roles": set(s.get("exempt_roles", []))
+                }
+        except Exception as e:
+            print(f"[ERROR] Failed to load antigrief settings from DB: {e}")
 
         # 自己紹介・評価設定のロード
         try:
