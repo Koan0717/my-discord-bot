@@ -1676,7 +1676,8 @@ class PanelSelect(discord.ui.Select):
             discord.SelectOption(label="入界手続き", description="新規メンバーの入界手続きパネルを設置します", emoji="📝", value="interview"),
             discord.SelectOption(label="お問い合わせ", description="お問い合わせ作成パネルを設置します", emoji="✉️", value="inquiry"),
             discord.SelectOption(label="カスタムチケット", description="任意のタイトル・説明文・担当ロールを指定したチケットパネルを設置します", emoji="🎫", value="custom_ticket"),
-            discord.SelectOption(label="任意ロール", description="任意のロールをリアクションで付与するパネルを設置します", emoji="🎭", value="custom_role_panel")
+            discord.SelectOption(label="任意ロール", description="任意のロールをリアクションで付与するパネルを設置します", emoji="🎭", value="custom_role_panel"),
+            discord.SelectOption(label="VC作成トリガー設定", description="VC作成トリガーの管理パネルを設置します", emoji="🎙️", value="vc_trigger")
         ]
         super().__init__(placeholder="設置するパネルを選択してください...", min_values=1, max_values=1, options=options, custom_id="admin_panel_setup_select")
 
@@ -1807,6 +1808,22 @@ class PanelSelect(discord.ui.Select):
             await interaction.response.send_modal(CustomTicketSetupModal())
         elif val == "custom_role_panel":
             await interaction.response.send_modal(CustomRolePanelSetupModal())
+        elif val == "vc_trigger":
+            embed = discord.Embed(
+                title="🎙️ VC作成トリガー設定パネル",
+                description=(
+                    "ユーザーが参加した際に一時部屋を自動作成するチャンネルを設定できます。\n\n"
+                    "下のボタンから設定メニューを開いてください。"
+                ),
+                color=discord.Color.blue()
+            )
+            await channel.send(embed=embed, view=VCTriggerPanelView())
+            await interaction.response.send_message("✅ VC作成トリガー設定パネルを設置しました。", ephemeral=True)
+
+class VCTriggerPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(ManageVCTriggersButton())
 
 class PanelSetupView(discord.ui.View):
     def __init__(self):
