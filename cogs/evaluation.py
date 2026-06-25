@@ -198,9 +198,11 @@ class Evaluation(commands.Cog):
         if target != interaction.user and not is_evaluator:
             return await interaction.response.send_message("他人の評価期間を確認する権限がありません。", ephemeral=True)
             
+        await interaction.response.defer(ephemeral=True)
+        
         period = await database.get_evaluation_period(target.id)
         if not period:
-            return await interaction.response.send_message(f"{target.display_name} は評価期間中ではありません。", ephemeral=True)
+            return await interaction.followup.send(f"{target.display_name} は評価期間中ではありません。", ephemeral=True)
             
         start_str = config.format_evaluation_datetime(period['start_time'])
         end_str = config.format_evaluation_datetime(period['end_time'])
@@ -226,7 +228,7 @@ class Evaluation(commands.Cog):
             if db_b010 > 0 or db_b011 > 0:
                 embed.add_field(name="💾 過去の追加分（DB）", value=f"{b010_str} {db_b010} 個\n{b011_str} {db_b011} 個", inline=False)
             
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @EvaluationGroup.command(name="延長", description="【運営・評価員専用】ユーザーの評価期間を延長します")
     @app_commands.describe(user="延長するユーザー", extra_days="延長する日数")
@@ -302,6 +304,8 @@ class Evaluation(commands.Cog):
         if not config.has_evaluator_role(self.bot, interaction.user) and not interaction.user.guild_permissions.administrator:
             return await interaction.response.send_message("権限がありません。", ephemeral=True)
             
+        await interaction.response.defer(ephemeral=True)
+        
         counts = await database.get_user_evaluation_counts(user.id)
         db_b010 = counts.get("b_010", 0)
         db_b011 = counts.get("b_011", 0)
@@ -318,7 +322,7 @@ class Evaluation(commands.Cog):
         if db_b010 > 0 or db_b011 > 0:
             embed.add_field(name="💾 過去の追加分（DB）", value=f"{b010_str} {db_b010} 個\n{b011_str} {db_b011} 個", inline=False)
         
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 async def setup(bot):
     cog = Evaluation(bot)
