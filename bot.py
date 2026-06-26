@@ -13,7 +13,6 @@ from cogs.interview import InterviewPanelView
 from cogs.tickets import EmblemRequestPanelView, ConfessionRequestPanelView, TicketControlView, InquiryRequestPanelView, CustomTicketPanelView
 from cogs.admin import PanelSetupView, VCTriggerPanelView
 from cogs.logging_cog import AnonymousChatPanelView
-from cogs.shop import ShopPanelView
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
@@ -160,7 +159,6 @@ class EconomyBot(commands.Bot):
         self.add_view(AnonymousChatPanelView())
         self.add_view(CustomTicketPanelView())
         self.add_view(VCTriggerPanelView())
-        self.add_view(ShopPanelView(self))
 
         # Cogsのロード
         cogs = [
