@@ -222,6 +222,34 @@ async def setup_db():
         except Exception as e:
             print(f"[Migration] sticky_templates migration warning: {e}")
 
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS shop_settings (
+                guild_id BIGINT PRIMARY KEY,
+                employee_role_id BIGINT,
+                manager_role_id BIGINT
+            )
+        ''')
+
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS shop_items (
+                item_id SERIAL PRIMARY KEY,
+                guild_id BIGINT,
+                name TEXT,
+                usage TEXT,
+                target TEXT,
+                price INTEGER DEFAULT 0
+            )
+        ''')
+
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS user_items (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT,
+                item_id INTEGER,
+                purchased_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
 
 async def get_user(user_id: int):
     p = await get_pool()
@@ -878,6 +906,77 @@ async def clear_antigrief_settings_field(guild_id: int, field_name: str):
 
     await set_antigrief_settings(guild_id, cfg["categories"], cfg["channels"], cfg["exempt_roles"])
 
+# ショップ設定関連
+async def get_shop_settings(guild_id: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        row = await conn.fetchrow('SELECT employee_role_id, manager_role_id FROM shop_settings WHERE guild_id = $1', guild_id)
+        if row:
+            return {"employee_role_id": row["employee_role_id"], "manager_role_id": row["manager_role_id"]}
+        else:
+            return {"employee_role_id": None, "manager_role_id": None}
 
+async def set_shop_settings(guild_id: int, employee_role_id: int, manager_role_id: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO shop_settings (guild_id, employee_role_id, manager_role_id)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (guild_id) DO UPDATE SET
+            employee_role_id = EXCLUDED.employee_role_id,
+            manager_role_id = EXCLUDED.manager_role_id
+        ''', guild_id, employee_role_id, manager_role_id)
 
+# ショップ商品関連
+async def get_shop_items(guild_id: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        rows = await conn.fetch('SELECT item_id, name, usage, target, price FROM shop_items WHERE guild_id = $1 ORDER BY item_id ASC', guild_id)
+        return [dict(r) for r in rows]
 
+async def get_shop_item(item_id: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        row = await conn.fetchrow('SELECT item_id, guild_id, name, usage, target, price FROM shop_items WHERE item_id = $1', item_id)
+        return dict(row) if row else None
+
+async def add_shop_item(guild_id: int, name: str, usage: str, target: str, price: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO shop_items (guild_id, name, usage, target, price)
+            VALUES ($1, $2, $3, $4, $5)
+        ''', guild_id, name, usage, target, price)
+
+async def update_shop_item(item_id: int, name: str, usage: str, target: str, price: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('''
+            UPDATE shop_items SET name = $1, usage = $2, target = $3, price = $4 WHERE item_id = $5
+        ''', name, usage, target, price, item_id)
+
+async def delete_shop_item(item_id: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('DELETE FROM shop_items WHERE item_id = $1', item_id)
+
+# ユーザー購入履歴関連
+async def add_user_item(user_id: int, item_id: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO user_items (user_id, item_id, purchased_at)
+            VALUES ($1, $2, CURRENT_TIMESTAMP)
+        ''', user_id, item_id)
+
+async def get_user_items(user_id: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        rows = await conn.fetch('''
+            SELECT u.id, u.item_id, s.name, u.purchased_at
+            FROM user_items u
+            JOIN shop_items s ON u.item_id = s.item_id
+            WHERE u.user_id = $1
+            ORDER BY u.purchased_at DESC
+        ''', user_id)
+        return [dict(r) for r in rows]
