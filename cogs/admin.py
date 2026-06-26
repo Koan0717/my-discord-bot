@@ -2001,6 +2001,16 @@ class BotSetupMainSelect(discord.ui.Select):
         embed = view.build_embed(interaction.guild)
         await interaction.response.edit_message(embed=embed, view=view)
 
+class ManageGambleSettingsButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="🎰 ギャンブル設定", style=discord.ButtonStyle.secondary, custom_id="admin_manage_gamble_btn")
+
+    async def callback(self, interaction: discord.Interaction):
+        from cogs.gambling import GambleSettingsView
+        view = GambleSettingsView(interaction.user)
+        embed = await view.build_embed(interaction.client)
+        await interaction.response.edit_message(embed=embed, view=view)
+
 class BotSetupMainView(discord.ui.View):
     def __init__(self, user, bot=None):
         super().__init__(timeout=300)
@@ -2039,6 +2049,10 @@ class BotSetupMainView(discord.ui.View):
         btn_antigrief = ManageAntigriefSettingsButton()
         btn_antigrief.row = 2
         self.add_item(btn_antigrief)
+
+        btn_gamble = ManageGambleSettingsButton()
+        btn_gamble.row = 3
+        self.add_item(btn_gamble)
 
     async def build_embed(self, guild):
         bot = self.bot
@@ -2126,6 +2140,27 @@ class BotSetupMainView(discord.ui.View):
         for p in room_prices:
             prices_text += f"・{p['room_type']} ({p['duration']}時間) ➔ **{p['price']:,} {cur_name}**\n"
         embed.add_field(name="💰 経済・部屋価格設定", value=prices_text, inline=False)
+        
+        from cogs.gambling import get_win_rate_str
+        chinchiro_exp = config.get_setting(bot, "GAMBLE_CHINCHIRO_EXPECTATION")
+        if chinchiro_exp is None: chinchiro_exp = 0.95
+        coinflip_exp = config.get_setting(bot, "GAMBLE_COINFLIP_EXPECTATION")
+        if coinflip_exp is None: coinflip_exp = 0.95
+        slot_exp = config.get_setting(bot, "GAMBLE_SLOT_EXPECTATION")
+        if slot_exp is None: slot_exp = 0.95
+        blackjack_exp = config.get_setting(bot, "GAMBLE_BLACKJACK_EXPECTATION")
+        if blackjack_exp is None: blackjack_exp = 0.95
+        roulette_exp = config.get_setting(bot, "GAMBLE_ROULETTE_EXPECTATION")
+        if roulette_exp is None: roulette_exp = 0.95
+        
+        gamble_text = (
+            f"・チンチロリン期待値: **{chinchiro_exp}**\n  ({get_win_rate_str('chinchiro', chinchiro_exp)})\n"
+            f"・コイントス期待値: **{coinflip_exp}**\n  ({get_win_rate_str('coinflip', coinflip_exp)})\n"
+            f"・スロット期待値: **{slot_exp}**\n  ({get_win_rate_str('slot', slot_exp)})\n"
+            f"・ブラックジャック期待値: **{blackjack_exp}**\n  ({get_win_rate_str('blackjack', blackjack_exp)})\n"
+            f"・ルーレット期待値: **{roulette_exp}**\n  ({get_win_rate_str('roulette', roulette_exp)})\n"
+        )
+        embed.add_field(name="🎰 ギャンブル期待値設定", value=gamble_text, inline=False)
         
         trigger_text = ""
         for tid in bot.auto_vc_triggers:

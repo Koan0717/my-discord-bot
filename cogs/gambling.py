@@ -6,9 +6,13 @@ import asyncio
 import database
 import config
 
+_bot_instance = None
+
 class Gambling(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        global _bot_instance
+        _bot_instance = bot
 
 async def setup(bot):
     await bot.add_cog(Gambling(bot))
@@ -52,8 +56,38 @@ class ChinchiroGameView(discord.ui.View):
             if d[1]==d[2]: return f"出目{d[0]}", 100+d[0]
             if d[0]==d[2]: return f"出目{d[1]}", 100+d[1]
             return "役なし", 0
-        bd, pd = [random.randint(1,6) for _ in range(3)], [random.randint(1,6) for _ in range(3)]
-        bh, br = get_rank(bd); ph, pr = get_rank(pd)
+        # Chinchiro expectation control
+        E = config.get_setting(_bot_instance, "GAMBLE_CHINCHIRO_EXPECTATION")
+        if E is None: E = 0.95
+        
+        max_attempts = 100
+        for _ in range(max_attempts):
+            bd, pd = [random.randint(1,6) for _ in range(3)], [random.randint(1,6) for _ in range(3)]
+            bh, br = get_rank(bd); ph, pr = get_rank(pd)
+            
+            if pr > br:
+                outcome = "win"
+            elif pr < br:
+                outcome = "lose"
+            else:
+                outcome = "draw"
+                
+            if E <= 1.0:
+                if outcome == "win":
+                    if random.random() < E:
+                        break
+                else:
+                    break
+            else: # E > 1.0
+                if outcome == "lose":
+                    if random.random() < (2.0 - min(E, 2.0)):
+                        break
+                else:
+                    break
+        else:
+            bd, pd = [random.randint(1,6) for _ in range(3)], [random.randint(1,6) for _ in range(3)]
+            bh, br = get_rank(bd); ph, pr = get_rank(pd)
+
         if pr > br:
             mul = 9 if ph=="ピンゾロ" else (4 if "アラシ" in ph else (2 if ph=="シゴロ" else (1 if "出目" in ph else 0)))
             await database.add_balance(self.user.id, int(self.bet*(1+mul))); await config.send_economy_log(interaction.guild, "🎲 カジノ(チンチロ)", f"{self.user.mention} がチンチロで {int(self.bet*mul)} {config.CURRENCY_NAME} 獲得しました。", user=self.user)
@@ -96,11 +130,18 @@ class CoinflipGameView(discord.ui.View):
         if not await database.remove_balance(self.user.id, self.bet): return await it.response.edit_message(content="残高不足", view=None)
         await database.increment_gambling_count(self.user.id)
         await config.send_gambling_log(it.guild, self.user, "コイントス", self.bet, self.count + 1)
-        res = random.choice(["heads", "tails"])
-        if choice == res:
+        E = config.get_setting(_bot_instance, "GAMBLE_COINFLIP_EXPECTATION")
+        if E is None: E = 0.95
+        win_prob = min(E / 2.0, 1.0)
+        is_win = random.random() < win_prob
+        
+        if is_win:
+            res = choice
             await database.add_balance(self.user.id, int(self.bet*2.0)); await config.send_economy_log(it.guild, "🎲 カジノ(コイントス)", f"{self.user.mention} がコイントスで {int(self.bet*1.0)} {config.CURRENCY_NAME} 獲得しました。", user=self.user)
             msg, color = f"🏆 当たり！ {int(self.bet*2.0)} {config.CURRENCY_NAME} 獲得", discord.Color.gold()
-        else: msg, color = f"💀 外れ… {self.bet} {config.CURRENCY_NAME} 没収", discord.Color.red()
+        else:
+            res = "tails" if choice == "heads" else "heads"
+            msg, color = f"💀 外れ… {self.bet} {config.CURRENCY_NAME} 没収", discord.Color.red()
         await it.response.edit_message(content=None, embed=discord.Embed(title="🪙 結果", description=f"結果: {'表' if res=='heads' else '裏'}\n{msg}", color=color), view=None)
     @discord.ui.button(label="表", emoji="⚪")
     async def heads(self, it, btn): await self.process(it, "heads")
@@ -128,8 +169,43 @@ class SlotBetModal(discord.ui.Modal, title='スロット：賭け金入力'):
             if not await database.remove_balance(it.user.id, bet): return await it.followup.send("残高不足です。", ephemeral=True)
             await database.increment_gambling_count(it.user.id)
             await config.send_gambling_log(it.guild, it.user, "スロット", bet, count + 1)
-            emo = ["🍒", "🍋", "🍉", "🔔", "⭐", "7️⃣", "💎", "🍀"]
-            r = [random.choice(emo) for _ in range(3)]
+            E = config.get_setting(_bot_instance, "GAMBLE_SLOT_EXPECTATION")
+            if E is None: E = 0.95
+            
+            base_expected = 285.0 / 512.0
+            k = E / base_expected
+            p_7 = (1.0 / 512.0) * k
+            p_star = (1.0 / 512.0) * k
+            p_triple = (6.0 / 512.0) * k
+            p_double = (168.0 / 512.0) * k
+            
+            p_sum = p_7 + p_star + p_triple + p_double
+            if p_sum > 1.0:
+                p_7 /= p_sum
+                p_star /= p_sum
+                p_triple /= p_sum
+                p_double /= p_sum
+                
+            rand = random.random()
+            if rand < p_7:
+                r = ["7️⃣", "7️⃣", "7️⃣"]
+            elif rand < p_7 + p_star:
+                r = ["⭐", "⭐", "⭐"]
+            elif rand < p_7 + p_star + p_triple:
+                other_emo = ["🍒", "🍋", "🍉", "🔔", "💎", "🍀"]
+                chosen = random.choice(other_emo)
+                r = [chosen, chosen, chosen]
+            elif rand < p_7 + p_star + p_triple + p_double:
+                emo = ["🍒", "🍋", "🍉", "🔔", "⭐", "7️⃣", "💎", "🍀"]
+                c1 = random.choice(emo)
+                remaining = [e for e in emo if e != c1]
+                c2 = random.choice(remaining)
+                r = [c1, c1, c2]
+                random.shuffle(r)
+            else:
+                emo = ["🍒", "🍋", "🍉", "🔔", "⭐", "7️⃣", "💎", "🍀"]
+                r = random.sample(emo, 3)
+                
             mul = 10 if r[0]==r[1]==r[2]=="7️⃣" else (5 if r[0]==r[1]==r[2]=="⭐" else (3 if r[0]==r[1]==r[2] else (1.5 if len(set(r))<3 else 0)))
             win = int(bet * mul)
             if win > 0:
@@ -319,8 +395,38 @@ class BlackjackGameView(discord.ui.View):
             child.disabled = True
             
         player_score = calculate_blackjack_score(self.player_hand)
+        E = config.get_setting(_bot_instance, "GAMBLE_BLACKJACK_EXPECTATION")
+        if E is None: E = 0.95
+        
+        avoid_bust_prob = max(0.0, 0.95 - E)
+        force_bust_prob = max(0.0, E - 0.95)
+        
         while calculate_blackjack_score(self.dealer_hand) < 17:
-            self.dealer_hand.append(self.deck.pop())
+            current_score = calculate_blackjack_score(self.dealer_hand)
+            
+            bust_cards = []
+            safe_cards = []
+            for i, card in enumerate(self.deck):
+                temp_hand = self.dealer_hand + [card]
+                if calculate_blackjack_score(temp_hand) > 21:
+                    bust_cards.append((i, card))
+                else:
+                    safe_cards.append((i, card))
+                    
+            r = random.random()
+            chosen_card_idx = -1
+            
+            if r < avoid_bust_prob and safe_cards:
+                chosen_card_idx = random.choice(safe_cards)[0]
+            elif r < avoid_bust_prob + force_bust_prob and bust_cards:
+                chosen_card_idx = random.choice(bust_cards)[0]
+                
+            if chosen_card_idx != -1:
+                card = self.deck.pop(chosen_card_idx)
+            else:
+                card = self.deck.pop()
+                
+            self.dealer_hand.append(card)
             
         dealer_score = calculate_blackjack_score(self.dealer_hand)
         
@@ -559,7 +665,30 @@ async def run_roulette_game(interaction: discord.Interaction, user, bet, count, 
         dummy_num = random.randint(0, 36)
         spin_sequence.append(get_color_emoji(dummy_num))
         
-    final_number = random.randint(0, 36)
+    # Roulette expectation control
+    E = config.get_setting(_bot_instance, "GAMBLE_ROULETTE_EXPECTATION")
+    if E is None: E = 0.95
+    E0 = 36.0 / 37.0
+    
+    max_attempts = 100
+    for _ in range(max_attempts):
+        final_number = random.randint(0, 36)
+        is_win, multiplier = check_roulette_win(final_number, bet_type, target_num)
+        if E < E0:
+            if is_win:
+                if random.random() < (E / E0):
+                    break
+            else:
+                break
+        else: # E >= E0
+            if not is_win:
+                p_lose_pass = 1.0 - (E - E0) / (1.0 - E0)
+                if random.random() < p_lose_pass:
+                    break
+            else:
+                break
+    else:
+        final_number = random.randint(0, 36)
     
     embed = discord.Embed(
         title="🎡 ルーレット回転中...",
@@ -615,3 +744,193 @@ class RouletteView(discord.ui.View):
     @discord.ui.button(label="🎡 ルーレットで遊ぶ", style=discord.ButtonStyle.primary, custom_id="persistent_roulette_btn")
     async def play(self, it, btn):
         await it.response.send_modal(RouletteBetModal())
+
+
+def calculate_gamble_win_rates(game_name: str, expectation: float):
+    """
+    指定されたゲーム名と期待値から、プレイヤーとBot（あるいはハウス）の勝率を計算して返します。
+    返り値: (player_win_rate, bot_win_rate, draw_rate) - パーセンテージ (0-100)
+    """
+    E = expectation
+    if game_name == "coinflip":
+        p_win = min(E / 2.0, 1.0) * 100
+        p_lose = (1.0 - min(E / 2.0, 1.0)) * 100
+        return p_win, p_lose, 0.0
+        
+    elif game_name == "slot":
+        if E <= 1.5:
+            p_win = (176.0 / 285.0) * E * 100
+        else:
+            p_win = 100.0
+        return p_win, 100.0 - p_win, 0.0
+        
+    elif game_name == "chinchiro":
+        if E <= 1.0:
+            p_win = 44.5 * E
+            p_draw = 11.0 + 44.5 * (1.0 - E) * (11.0 / 55.5)
+            p_lose = 44.5 + 44.5 * (1.0 - E) * (44.5 / 55.5)
+        else:
+            E_clamped = min(E, 2.0)
+            p_lose = max(0.0, 44.5 * (2.0 - E_clamped))
+            p_draw = 11.0 + 44.5 * (E_clamped - 1.0) * (11.0 / 55.5)
+            p_win = 44.5 + 44.5 * (E_clamped - 1.0) * (44.5 / 55.5)
+        return p_win, p_lose, p_draw
+        
+    elif game_name == "roulette":
+        p_win = min(E / 2.0, 1.0) * 100
+        p_lose = (1.0 - min(E / 2.0, 1.0)) * 100
+        return p_win, p_lose, 0.0
+        
+    elif game_name == "blackjack":
+        if E <= 0.95:
+            p_win = 43.0 * (E / 0.95)
+            p_draw = 9.0
+            p_lose = 100.0 - p_draw - p_win
+        else:
+            E_clamped = min(E, 2.0)
+            p_lose = max(0.0, 48.0 * ((2.0 - E_clamped) / 1.05))
+            p_draw = 9.0
+            p_win = 100.0 - p_draw - p_lose
+        return p_win, p_lose, p_draw
+        
+    return 0.0, 0.0, 0.0
+
+
+def get_win_rate_str(game_name: str, expectation: float):
+    p_win, p_lose, p_draw = calculate_gamble_win_rates(game_name, expectation)
+    if p_draw > 0:
+        return f"プレイヤー勝率: {p_win:.1f}% / Bot勝率: {p_lose:.1f}% / 引き分け: {p_draw:.1f}%"
+    else:
+        if game_name == "slot":
+            return f"当選率: {p_win:.1f}%"
+        return f"プレイヤー勝率: {p_win:.1f}% / Bot勝率: {p_lose:.1f}%"
+
+
+class GambleSettingsView(discord.ui.View):
+    def __init__(self, user):
+        super().__init__(timeout=300)
+        self.user = user
+        self.add_item(GambleGameSelect())
+        self.add_item(GambleSettingsBackButton())
+   
+    async def build_embed(self, bot):
+        embed = discord.Embed(
+            title="🎰 ギャンブル期待値設定パネル",
+            description="各ゲームの期待値（還元率）を設定します。\n設定するゲームを下のセレクトメニューから選択してください。",
+            color=discord.Color.purple()
+        )
+        for game_key, game_name in [
+            ("GAMBLE_CHINCHIRO_EXPECTATION", "チンチロリン"),
+            ("GAMBLE_COINFLIP_EXPECTATION", "コイントス"),
+            ("GAMBLE_SLOT_EXPECTATION", "スロット"),
+            ("GAMBLE_BLACKJACK_EXPECTATION", "ブラックジャック"),
+            ("GAMBLE_ROULETTE_EXPECTATION", "ルーレット")
+        ]:
+            val = config.get_setting(bot, game_key)
+            if val is None: val = 0.95
+            short_name = game_key.replace("GAMBLE_", "").replace("_EXPECTATION", "").lower()
+            rate_str = get_win_rate_str(short_name, val)
+            embed.add_field(
+                name=f"🎮 {game_name}",
+                value=f"期待値: **{val}** (還元率 {val*100:.1f}%)\n勝率目安: {rate_str}",
+                inline=False
+            )
+        return embed
+
+
+class GambleGameSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="🎲 チンチロリン", value="GAMBLE_CHINCHIRO_EXPECTATION"),
+            discord.SelectOption(label="🪙 コイントス", value="GAMBLE_COINFLIP_EXPECTATION"),
+            discord.SelectOption(label="🎰 スロット", value="GAMBLE_SLOT_EXPECTATION"),
+            discord.SelectOption(label="🃏 ブラックジャック", value="GAMBLE_BLACKJACK_EXPECTATION"),
+            discord.SelectOption(label="🎡 ルーレット", value="GAMBLE_ROULETTE_EXPECTATION")
+        ]
+        super().__init__(placeholder="期待値を変更するゲームを選択...", options=options, custom_id="admin_gamble_game_select")
+   
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if interaction.user != view.user:
+            return await interaction.response.send_message("操作権限がありません。", ephemeral=True)
+        key = self.values[0]
+        await interaction.response.send_modal(GambleExpectationModal(key))
+
+
+class GambleExpectationModal(discord.ui.Modal, title="ギャンブル期待値設定"):
+    exp_input = discord.ui.TextInput(
+        label="設定する期待値 (0.0 〜 2.0 または 0% 〜 200%)",
+        placeholder="例: 0.95 または 95",
+        max_length=5,
+        required=True
+    )
+   
+    def __init__(self, key):
+        super().__init__()
+        self.key = key
+   
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            val_str = self.exp_input.value.strip()
+            if "%" in val_str:
+                val = float(val_str.replace("%", "")) / 100.0
+            else:
+                val = float(val_str)
+                if val > 2.0:
+                    val = val / 100.0
+               
+            if val < 0.0 or val > 2.0:
+                return await interaction.response.send_message("期待値は 0.0 〜 2.0 (0% 〜 200%) の範囲で入力してください。", ephemeral=True)
+                   
+            bot = interaction.client
+            old_val = config.get_setting(bot, self.key)
+            if old_val is None: old_val = 0.95
+               
+            await database.save_setting(self.key, val)
+            bot.bot_settings[self.key] = val
+               
+            game_name_map = {
+                "GAMBLE_CHINCHIRO_EXPECTATION": ("チンチロリン", "chinchiro"),
+                "GAMBLE_COINFLIP_EXPECTATION": ("コイントス", "coinflip"),
+                "GAMBLE_SLOT_EXPECTATION": ("スロット", "slot"),
+                "GAMBLE_BLACKJACK_EXPECTATION": ("ブラックジャック", "blackjack"),
+                "GAMBLE_ROULETTE_EXPECTATION": ("ルーレット", "roulette")
+            }
+            jp_name, short_name = game_name_map[self.key]
+               
+            old_rate_str = get_win_rate_str(short_name, old_val)
+            new_rate_str = get_win_rate_str(short_name, val)
+               
+            embed = discord.Embed(
+                title="✅ 期待値設定完了",
+                description=f"**{jp_name}** の期待値を更新しました！\n\n"
+                            f"📈 **期待値の変更**\n"
+                            f"・変更前: `{old_val}` (還元率 {old_val*100:.1f}%)\n"
+                            f"・変更後: **`{val}`** (還元率 {val*100:.1f}%)\n\n"
+                            f"🎯 **勝率の変化**\n"
+                            f"・[変更前] {old_rate_str}\n"
+                            f"➔ **[変更後] {new_rate_str}**",
+                color=discord.Color.green()
+            )
+               
+            back_view = GambleSettingsView(interaction.user)
+            await interaction.response.send_message(embed=embed, view=back_view, ephemeral=True)
+        except ValueError:
+            await interaction.response.send_message("数値（例: 0.95 や 95%）を入力してください。", ephemeral=True)
+        except Exception as e:
+            print(f"[ERROR] GambleExpectationModal: {e}")
+            await interaction.response.send_message("設定エラーが発生しました。", ephemeral=True)
+
+
+class GambleSettingsBackButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="⬅️ 戻る", style=discord.ButtonStyle.secondary, custom_id="admin_gamble_back_btn")
+   
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if interaction.user != view.user:
+            return await interaction.response.send_message("操作権限がありません。", ephemeral=True)
+        from cogs.admin import BotSetupMainView
+        back_view = BotSetupMainView(interaction.user, interaction.client)
+        embed = await back_view.build_embed(interaction.guild)
+        await interaction.response.edit_message(embed=embed, view=back_view)
