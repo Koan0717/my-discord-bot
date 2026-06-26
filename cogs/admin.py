@@ -299,17 +299,54 @@ class ShopSettingsConfigView(discord.ui.View):
 
     @discord.ui.button(label="従業員ロールを設定", style=discord.ButtonStyle.primary, custom_id="persistent_admin_shop_emp_btn")
     async def set_employee_role(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(ShopRoleModal(self.bot, self.guild_id, "employee"))
+        view = ShopRoleSelectView(self.bot, self.guild_id, "employee")
+        await interaction.response.edit_message(content="従業員ロールを選択してください：", view=view, embed=None)
 
     @discord.ui.button(label="統括ロールを設定", style=discord.ButtonStyle.primary, custom_id="persistent_admin_shop_mgr_btn")
     async def set_manager_role(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(ShopRoleModal(self.bot, self.guild_id, "manager"))
+        view = ShopRoleSelectView(self.bot, self.guild_id, "manager")
+        await interaction.response.edit_message(content="統括ロールを選択してください：", view=view, embed=None)
 
     @discord.ui.button(label="戻る", style=discord.ButtonStyle.secondary, custom_id="persistent_admin_shop_back_btn")
     async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         view = BotSetupMainView(interaction.user, self.bot)
         embed = await view.build_embed(interaction.guild)
         await interaction.response.edit_message(embed=embed, view=view)
+
+
+class ShopRoleSelectView(discord.ui.View):
+    def __init__(self, bot, guild_id: int, role_type: str):
+        super().__init__(timeout=180)
+        self.bot = bot
+        self.guild_id = guild_id
+        self.role_type = role_type
+        
+        placeholder = "従業員ロールを選択..." if role_type == "employee" else "統括ロールを選択..."
+        self.select = discord.ui.RoleSelect(placeholder=placeholder, min_values=1, max_values=1, custom_id="shop_role_select")
+        self.select.callback = self.role_select_callback
+        self.add_item(self.select)
+
+    async def role_select_callback(self, interaction: discord.Interaction):
+        role = self.select.values[0]
+        
+        settings = await database.get_shop_settings(self.guild_id)
+        emp_role_id = settings["employee_role_id"]
+        mgr_role_id = settings["manager_role_id"]
+        
+        if self.role_type == "employee":
+            emp_role_id = role.id
+        else:
+            mgr_role_id = role.id
+            
+        await database.set_shop_settings(self.guild_id, emp_role_id, mgr_role_id)
+        await interaction.response.send_message(f"{'従業員' if self.role_type == 'employee' else '統括'}ロールを {role.mention} に設定しました。", ephemeral=True)
+        
+        try:
+            view = ShopSettingsConfigView(self.bot, self.guild_id)
+            embed = await view.build_embed(interaction.guild)
+            await interaction.message.edit(embed=embed, view=view)
+        except:
+            pass
 
 class ShopRoleModal(discord.ui.Modal):
     def __init__(self, bot, guild_id: int, role_type: str):
