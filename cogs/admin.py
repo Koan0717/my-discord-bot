@@ -2050,6 +2050,11 @@ class BotSetupMainView(discord.ui.View):
         btn_antigrief.row = 2
         self.add_item(btn_antigrief)
 
+        
+        btn_shop = ManageShopSettingsButton()
+        btn_shop.row = 3
+        self.add_item(btn_shop)
+
         btn_gamble = ManageGambleSettingsButton()
         btn_gamble.row = 3
         self.add_item(btn_gamble)
