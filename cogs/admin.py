@@ -1953,7 +1953,8 @@ class PanelSelect(discord.ui.Select):
             discord.SelectOption(label="お問い合わせ", description="お問い合わせ作成パネルを設置します", emoji="✉️", value="inquiry"),
             discord.SelectOption(label="カスタムチケット", description="任意のタイトル・説明文・担当ロールを指定したチケットパネルを設置します", emoji="🎫", value="custom_ticket"),
             discord.SelectOption(label="任意ロール", description="任意のロールをリアクションで付与するパネルを設置します", emoji="🎭", value="custom_role_panel"),
-            discord.SelectOption(label="VC作成トリガー設定", description="VC作成トリガーの管理パネルを設置します", emoji="🎙️", value="vc_trigger")
+            discord.SelectOption(label="VC作成トリガー設定", description="VC作成トリガーの管理パネルを設置します", emoji="🎙️", value="vc_trigger"),
+            discord.SelectOption(label="ショップ", description="ショップ機能のパネルを設置します", emoji="🛒", value="shop")
         ]
         super().__init__(placeholder="設置するパネルを選択してください...", min_values=1, max_values=1, options=options, custom_id="admin_panel_setup_select")
 
