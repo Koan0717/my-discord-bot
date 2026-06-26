@@ -119,13 +119,13 @@ class ShopPanelView(discord.ui.View):
         super().__init__(timeout=None)
         self.bot = bot
 
-    @discord.ui.button(label="ショップを開く", style=discord.ButtonStyle.primary, emoji="🛍️", custom_id="shop_panel_open_btn")
+    @discord.ui.button(label="ショップを開く", style=discord.ButtonStyle.primary, emoji="🛒", custom_id="shop_panel_open_btn")
     async def open_shop(self, interaction: discord.Interaction, button: discord.ui.Button):
         items = await database.get_shop_items(interaction.guild_id)
         if not items:
             return await interaction.response.send_message("現在販売中の商品はありません。", ephemeral=True)
         
-        embed = discord.Embed(title="🛍️ ショップ", description="購入したい商品を選択してください。", color=discord.Color.gold())
+        embed = discord.Embed(title="🛒 ショップ", description="購入したい商品を選択してください。", color=discord.Color.gold())
         for item in items:
             embed.add_field(name=f"🛒 {item['name']} (価格: {item['price']}円)", value=f"**用途:** {item['usage']}\n**対象:** {item['target']}", inline=False)
         
@@ -225,7 +225,7 @@ class ShopCog(commands.Cog):
     @commands.has_permissions(administrator=True)
     async def setup_shop_panel(self, ctx):
         embed = discord.Embed(
-            title="🛍️ ショップフロント",
+            title="🛒 ショップフロント",
             description="いらっしゃいませ！以下のボタンからメニューを選択してください。",
             color=discord.Color.gold()
         )
@@ -233,3 +233,4 @@ class ShopCog(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(ShopCog(bot))
+    bot.add_view(ShopPanelView(bot))
