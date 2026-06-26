@@ -269,6 +269,109 @@ class AdminCog(commands.Cog):
             await interaction.followup.send("❌ エラー: ユーザーを指定するか、『全プレイヤー』に『はい』を選択してください。", ephemeral=True)
 
 
+
+# --- ショップ設定 ---
+
+async def update_shop_settings_config_view(interaction: discord.Interaction, bot):
+    view = ShopSettingsConfigView(bot, interaction.guild_id)
+    embed = await view.build_embed(interaction.guild)
+    await interaction.response.edit_message(embed=embed, view=view)
+
+class ShopSettingsConfigView(discord.ui.View):
+    def __init__(self, bot, guild_id: int):
+        super().__init__(timeout=None)
+        self.bot = bot
+        self.guild_id = guild_id
+
+    async def build_embed(self, guild):
+        shop_settings = await database.get_shop_settings(self.guild_id)
+        emp_role = guild.get_role(shop_settings["employee_role_id"]) if shop_settings["employee_role_id"] else None
+        mgr_role = guild.get_role(shop_settings["manager_role_id"]) if shop_settings["manager_role_id"] else None
+        
+        embed = discord.Embed(
+            title="🛒 ショップ設定",
+            description="ショップの従業員ロールと統括ロールを設定します。",
+            color=discord.Color.gold()
+        )
+        embed.add_field(name="ショップ従業員ロール", value=emp_role.mention if emp_role else "未設定", inline=False)
+        embed.add_field(name="ショップ統括ロール", value=mgr_role.mention if mgr_role else "未設定", inline=False)
+        return embed
+
+    @discord.ui.button(label="従業員ロールを設定", style=discord.ButtonStyle.primary, custom_id="persistent_admin_shop_emp_btn")
+    async def set_employee_role(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ShopRoleModal(self.bot, self.guild_id, "employee"))
+
+    @discord.ui.button(label="統括ロールを設定", style=discord.ButtonStyle.primary, custom_id="persistent_admin_shop_mgr_btn")
+    async def set_manager_role(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ShopRoleModal(self.bot, self.guild_id, "manager"))
+
+    @discord.ui.button(label="戻る", style=discord.ButtonStyle.secondary, custom_id="persistent_admin_shop_back_btn")
+    async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = BotSetupMainView(interaction.user, self.bot)
+        embed = await view.build_embed(interaction.guild)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+class ShopRoleModal(discord.ui.Modal):
+    def __init__(self, bot, guild_id: int, role_type: str):
+        title = "ショップ従業員ロール設定" if role_type == "employee" else "ショップ統括ロール設定"
+        super().__init__(title=title)
+        self.bot = bot
+        self.guild_id = guild_id
+        self.role_type = role_type
+
+        self.role_id = discord.ui.TextInput(
+            label="ロールID",
+            placeholder="ロールのIDを入力してください",
+            required=True
+        )
+        self.add_item(self.role_id)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            role_id = int(self.role_id.value)
+            role = interaction.guild.get_role(role_id)
+            if not role:
+                return await interaction.response.send_message("無効なロールIDです。", ephemeral=True)
+            
+            settings = await database.get_shop_settings(self.guild_id)
+            emp_role_id = settings["employee_role_id"]
+            mgr_role_id = settings["manager_role_id"]
+            
+            if self.role_type == "employee":
+                emp_role_id = role_id
+            else:
+                mgr_role_id = role_id
+                
+            await database.set_shop_settings(self.guild_id, emp_role_id, mgr_role_id)
+            await interaction.response.send_message(f"{'従業員' if self.role_type == 'employee' else '統括'}ロールを {role.mention} に設定しました。", ephemeral=True)
+            
+            try:
+                view = ShopSettingsConfigView(self.bot, self.guild_id)
+                embed = await view.build_embed(interaction.guild)
+                await interaction.message.edit(embed=embed, view=view)
+            except:
+                pass
+                
+        except ValueError:
+            await interaction.response.send_message("IDは数値で入力してください。", ephemeral=True)
+
+class ManageShopSettingsButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="ショップ設定",
+            style=discord.ButtonStyle.secondary,
+            emoji="🛒",
+            custom_id="persistent_admin_manage_shop_settings_btn"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not config.has_admin_role(interaction.client, interaction.user) and not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("権限がありません。", ephemeral=True)
+
+        bot = interaction.client
+        await update_shop_settings_config_view(interaction, bot)
+
+
 async def setup(bot):
     cog = AdminCog(bot)
     await bot.add_cog(cog)
