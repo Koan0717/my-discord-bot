@@ -2096,6 +2096,15 @@ class PanelSelect(discord.ui.Select):
             )
             await channel.send(embed=embed, view=VCTriggerPanelView())
             await interaction.response.send_message("✅ VC作成トリガー設定パネルを設置しました。", ephemeral=True)
+        elif val == "shop":
+            from cogs.shop import ShopPanelView
+            embed = discord.Embed(
+                title="🛒 ショップフロント",
+                description="いらっしゃいませ！以下のボタンからメニューを選択してください。",
+                color=discord.Color.gold()
+            )
+            await channel.send(embed=embed, view=ShopPanelView(bot))
+            await interaction.response.send_message("✅ ショップパネルを設置しました。", ephemeral=True)
 
 class VCTriggerPanelView(discord.ui.View):
     def __init__(self):
