@@ -2100,7 +2100,7 @@ class PanelSelect(discord.ui.Select):
             from cogs.shop import ShopPanelView
             embed = discord.Embed(
                 title="🛒 ショップフロント",
-                description="いらっしゃいませ！以下のボタンからメニューを選択してください。",
+                description="鯖内の通行証を買うことができる。\n気になることや何か問題等を発見した際にはお問い合わせボタンを押してください",
                 color=discord.Color.gold()
             )
             await channel.send(embed=embed, view=ShopPanelView(bot))

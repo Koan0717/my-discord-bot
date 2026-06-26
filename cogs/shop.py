@@ -3,10 +3,47 @@ from discord.ext import commands
 import database
 import config
 
+class ShopItemRoleSetupView(discord.ui.View):
+    def __init__(self, bot, guild_id: int, item_id: int):
+        super().__init__(timeout=None)
+        self.bot = bot
+        self.guild_id = guild_id
+        self.item_id = item_id
+        self.target_role_id = None
+        self.reward_role_id = None
+        
+        self.target_select = discord.ui.RoleSelect(placeholder="対象ロールを選択（任意・未選択で誰でも）", min_values=1, max_values=1, custom_id=f"shop_item_target_{item_id}")
+        self.target_select.callback = self.target_callback
+        self.add_item(self.target_select)
+        
+        self.reward_select = discord.ui.RoleSelect(placeholder="購入品ロールを選択（任意・未選択でなし）", min_values=1, max_values=1, custom_id=f"shop_item_reward_{item_id}")
+        self.reward_select.callback = self.reward_callback
+        self.add_item(self.reward_select)
+        
+        self.save_btn = discord.ui.Button(label="設定完了", style=discord.ButtonStyle.success, custom_id=f"shop_item_save_{item_id}")
+        self.save_btn.callback = self.save_callback
+        self.add_item(self.save_btn)
+
+    async def target_callback(self, interaction: discord.Interaction):
+        self.target_role_id = self.target_select.values[0].id
+        await interaction.response.defer()
+
+    async def reward_callback(self, interaction: discord.Interaction):
+        self.reward_role_id = self.reward_select.values[0].id
+        await interaction.response.defer()
+
+    async def save_callback(self, interaction: discord.Interaction):
+        item = await database.get_shop_item(self.item_id)
+        if item:
+            await database.update_shop_item(self.item_id, item["name"], item["usage"], item["price"], self.target_role_id, self.reward_role_id)
+            await interaction.response.send_message(f"「{item['name']}」のロール設定を保存しました。", ephemeral=True)
+            self.stop()
+        else:
+            await interaction.response.send_message("商品の取得に失敗しました。", ephemeral=True)
+
 class ShopItemAddModal(discord.ui.Modal, title="商品の追加"):
     name = discord.ui.TextInput(label="商品名", placeholder="商品名を入力してください", required=True)
     usage = discord.ui.TextInput(label="用途", placeholder="用途を入力してください", style=discord.TextStyle.paragraph, required=True)
-    target = discord.ui.TextInput(label="対象", placeholder="対象を入力してください", required=True)
     price = discord.ui.TextInput(label="価格 (Bot内通貨)", placeholder="価格を数値で入力してください", required=True)
 
     def __init__(self, bot, guild_id):
@@ -20,8 +57,15 @@ class ShopItemAddModal(discord.ui.Modal, title="商品の追加"):
             if price_val < 0:
                 return await interaction.response.send_message("価格は0以上である必要があります。", ephemeral=True)
             
-            await database.add_shop_item(self.guild_id, self.name.value, self.usage.value, self.target.value, price_val)
-            await interaction.response.send_message(f"商品「{self.name.value}」を追加しました。", ephemeral=True)
+            item_id = await database.add_shop_item(self.guild_id, self.name.value, self.usage.value, price_val)
+            if item_id:
+                await interaction.response.send_message(
+                    f"商品「{self.name.value}」の基本情報を追加しました。続いて、対象ロールと購入品ロールを設定してください（任意）。", 
+                    view=ShopItemRoleSetupView(self.bot, self.guild_id, item_id), 
+                    ephemeral=True
+                )
+            else:
+                await interaction.response.send_message("商品の追加に失敗しました。", ephemeral=True)
         except ValueError:
             await interaction.response.send_message("価格は数値で入力してください。", ephemeral=True)
 
@@ -34,19 +78,21 @@ class ShopItemEditModal(discord.ui.Modal, title="商品の編集"):
         
         self.name = discord.ui.TextInput(label="商品名", default=item["name"], required=True)
         self.usage = discord.ui.TextInput(label="用途", default=item["usage"], style=discord.TextStyle.paragraph, required=True)
-        self.target = discord.ui.TextInput(label="対象", default=item["target"], required=True)
         self.price = discord.ui.TextInput(label="価格", default=str(item["price"]), required=True)
 
         self.add_item(self.name)
         self.add_item(self.usage)
-        self.add_item(self.target)
         self.add_item(self.price)
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
             price_val = int(self.price.value)
-            await database.update_shop_item(self.item["item_id"], self.name.value, self.usage.value, self.target.value, price_val)
-            await interaction.response.send_message(f"商品「{self.name.value}」を更新しました。", ephemeral=True)
+            await database.update_shop_item(self.item["item_id"], self.name.value, self.usage.value, price_val, self.item.get("target_role_id"), self.item.get("reward_role_id"))
+            await interaction.response.send_message(
+                f"商品「{self.name.value}」の基本情報を更新しました。ロールを再設定する場合は以下のメニューから選択してください。", 
+                view=ShopItemRoleSetupView(self.bot, self.guild_id, self.item["item_id"]), 
+                ephemeral=True
+            )
         except ValueError:
             await interaction.response.send_message("価格は数値で入力してください。", ephemeral=True)
 
@@ -74,16 +120,35 @@ class ShopItemSelect(discord.ui.Select):
             await database.delete_shop_item(item_id)
             await interaction.response.send_message(f"商品「{item['name']}」を削除しました。", ephemeral=True)
         elif self.action == "buy":
+            # 対象ロールチェック
+            target_role_id = item.get("target_role_id")
+            if target_role_id:
+                user_role_ids = [r.id for r in interaction.user.roles]
+                if target_role_id not in user_role_ids:
+                    return await interaction.response.send_message("この商品は対象のロールを持っていないため購入できません。", ephemeral=True)
+
             # 購入処理
             user_balance = await database.get_balance(interaction.user.id)
             if user_balance < item["price"]:
                 return await interaction.response.send_message("所持金が足りません。", ephemeral=True)
             
-            # 引き落としとアイテム付与
+            # 引き落としとアイテム付与履歴
             await database.add_balance(interaction.user.id, -item["price"])
             await database.add_user_item(interaction.user.id, item["item_id"])
             
-            await interaction.response.send_message(f"🎉 商品「{item['name']}」を購入しました！", ephemeral=True)
+            # ロール付与
+            reward_role_id = item.get("reward_role_id")
+            added_role_msg = ""
+            if reward_role_id:
+                reward_role = interaction.guild.get_role(reward_role_id)
+                if reward_role:
+                    try:
+                        await interaction.user.add_roles(reward_role)
+                        added_role_msg = f"\n特典ロール「{reward_role.name}」が付与されました！"
+                    except discord.Forbidden:
+                        added_role_msg = f"\n特典ロールの付与に失敗しました（Botの権限が不足しています）。"
+            
+            await interaction.response.send_message(f"🎉 商品「{item['name']}」を購入しました！{added_role_msg}", ephemeral=True)
 
 class ShopItemSelectView(discord.ui.View):
     def __init__(self, items, action):
@@ -127,7 +192,17 @@ class ShopPanelView(discord.ui.View):
         
         embed = discord.Embed(title="🛒 ショップ", description="購入したい商品を選択してください。", color=discord.Color.gold())
         for item in items:
-            embed.add_field(name=f"🛒 {item['name']} (価格: {item['price']}円)", value=f"**用途:** {item['usage']}\n**対象:** {item['target']}", inline=False)
+            target_text = "誰でも"
+            if item.get("target_role_id"):
+                target_role = interaction.guild.get_role(item["target_role_id"])
+                target_text = target_role.mention if target_role else "不明なロール"
+            
+            reward_text = "なし"
+            if item.get("reward_role_id"):
+                reward_role = interaction.guild.get_role(item["reward_role_id"])
+                reward_text = reward_role.mention if reward_role else "不明なロール"
+                
+            embed.add_field(name=f"🛒 {item['name']} (価格: {item['price']}円)", value=f"**用途:** {item['usage']}\n**対象:** {target_text}\n**購入品:** {reward_text}", inline=False)
         
         await interaction.response.send_message(embed=embed, view=ShopItemSelectView(items, "buy"), ephemeral=True)
 
@@ -138,7 +213,6 @@ class ShopPanelView(discord.ui.View):
         emp_role_id = settings.get("employee_role_id")
         mgr_role_id = settings.get("manager_role_id")
         
-        # 既存のチケット番号を検索
         current_ticket_nums = []
         for c in guild.text_channels:
             if c.name.lower().startswith("shop-ticket-"):
@@ -181,20 +255,7 @@ class ShopPanelView(discord.ui.View):
         except Exception as e:
             await interaction.response.send_message(f"チケットの作成に失敗しました: {e}", ephemeral=True)
 
-    @discord.ui.button(label="ショップについて", style=discord.ButtonStyle.secondary, emoji="ℹ️", custom_id="shop_panel_about_btn")
-    async def about_shop(self, interaction: discord.Interaction, button: discord.ui.Button):
-        items = await database.get_shop_items(interaction.guild_id)
-        if not items:
-            return await interaction.response.send_message("現在ショップについての情報はありません。", ephemeral=True)
-        
-        embed = discord.Embed(title="ℹ️ ショップについて", description="現在取り扱っている商品の一覧です。", color=discord.Color.blue())
-        for item in items:
-            embed.add_field(
-                name=f"商品名：{item['name']}",
-                value=f"**用途：**\n{item['usage']}\n**対象：**\n{item['target']}",
-                inline=False
-            )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
     @discord.ui.button(label="従業員専用", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="shop_panel_employee_btn")
     async def employee_panel(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -216,7 +277,6 @@ class ShopPanelView(discord.ui.View):
         else:
             await interaction.response.send_message("従業員として認証されました。現在、従業員向けの操作パネルは統括機能のみ提供されています。", ephemeral=True)
 
-
 class ShopCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -226,7 +286,7 @@ class ShopCog(commands.Cog):
     async def setup_shop_panel(self, ctx):
         embed = discord.Embed(
             title="🛒 ショップフロント",
-            description="いらっしゃいませ！以下のボタンからメニューを選択してください。",
+            description="鯖内の通行証を買うことができる。\n気になることや何か問題等を発見した際にはお問い合わせボタンを押してください",
             color=discord.Color.gold()
         )
         await ctx.send(embed=embed, view=ShopPanelView(self.bot))
