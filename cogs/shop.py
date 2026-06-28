@@ -101,7 +101,7 @@ class ShopItemAddModal(discord.ui.Modal, title="商品の追加"):
                 embed.add_field(name="実行者", value=f"{interaction.user.mention} (ID: {interaction.user.id})", inline=False)
                 embed.add_field(name="商品ID", value=str(item_id), inline=True)
                 embed.add_field(name="商品名", value=self.name.value, inline=True)
-                embed.add_field(name="価格", value=f"{price_val:,}円", inline=True)
+                embed.add_field(name="価格", value=f"{price_val:,} {config.CURRENCY_NAME}", inline=True)
                 embed.add_field(name="用途", value=self.usage.value, inline=False)
                 await config.send_log(interaction.guild, "shop", embed)
             else:
@@ -147,7 +147,7 @@ class ShopItemEditModal(discord.ui.Modal, title="商品の編集"):
             embed.add_field(name="実行者", value=f"{interaction.user.mention} (ID: {interaction.user.id})", inline=False)
             embed.add_field(name="商品ID", value=str(self.item["item_id"]), inline=True)
             embed.add_field(name="商品名", value=self.name.value, inline=True)
-            embed.add_field(name="価格", value=f"{price_val:,}円", inline=True)
+            embed.add_field(name="価格", value=f"{price_val:,} {config.CURRENCY_NAME}", inline=True)
             embed.add_field(name="用途", value=self.usage.value, inline=False)
             await config.send_log(interaction.guild, "shop", embed)
         except ValueError:
@@ -160,7 +160,7 @@ class ShopItemSelect(discord.ui.Select):
         for item in items:
             options.append(discord.SelectOption(
                 label=item["name"][:100],
-                description=f"価格: {item['price']}円"[:100],
+                description=f"価格: {item['price']:,} {config.CURRENCY_NAME}"[:100],
                 value=str(item["item_id"])
             ))
         super().__init__(placeholder="商品を選択してください...", min_values=1, max_values=1, options=options)
@@ -187,7 +187,7 @@ class ShopItemSelect(discord.ui.Select):
                 embed.add_field(name="実行者", value=f"{interaction.user.mention} (ID: {interaction.user.id})", inline=False)
                 embed.add_field(name="商品ID", value=str(item_id), inline=True)
                 embed.add_field(name="商品名", value=item["name"], inline=True)
-                embed.add_field(name="価格", value=f"{item['price']:,}円", inline=True)
+                embed.add_field(name="価格", value=f"{item['price']:,} {config.CURRENCY_NAME}", inline=True)
                 await config.send_log(interaction.guild, "shop", embed)
                 
             elif self.action == "buy":
@@ -234,7 +234,7 @@ class ShopItemSelect(discord.ui.Select):
                 embed.add_field(name="購入者", value=f"{interaction.user.mention} (ID: {interaction.user.id})", inline=False)
                 embed.add_field(name="商品ID", value=str(item_id), inline=True)
                 embed.add_field(name="商品名", value=item["name"], inline=True)
-                embed.add_field(name="支払額", value=f"{item['price']:,}円", inline=True)
+                embed.add_field(name="支払額", value=f"{item['price']:,} {config.CURRENCY_NAME}", inline=True)
                 if succeeded_roles:
                     embed.add_field(name="付与ロール", value="、".join(succeeded_roles), inline=False)
                 if failed_roles:
@@ -272,6 +272,95 @@ class ShopEmployeeView(discord.ui.View):
             return await interaction.followup.send("削除できる商品がありません。", ephemeral=True)
         await interaction.followup.send("削除する商品を選択してください:", view=ShopItemSelectView(items, "delete"), ephemeral=True)
 
+class ShopInquiryModal(discord.ui.Modal, title="ショップお問い合わせ"):
+    subject = discord.ui.TextInput(
+        label="件名",
+        placeholder="例: ○○商品の在庫について",
+        max_length=100,
+        required=True
+    )
+    details = discord.ui.TextInput(
+        label="内容",
+        style=discord.TextStyle.paragraph,
+        placeholder="お問い合わせ内容の具体的な詳細をご記入ください。",
+        required=True,
+        max_length=1000
+    )
+
+    def __init__(self, bot):
+        super().__init__()
+        self.bot = bot
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        settings = await database.get_shop_settings(guild.id)
+        emp_role_id = settings.get("employee_role_id")
+        mgr_role_id = settings.get("manager_role_id")
+        mention_role_id = settings.get("inquiry_mention_role_id")
+        
+        current_ticket_nums = []
+        for c in guild.text_channels:
+            if c.name.lower().startswith("shop-ticket-"):
+                try:
+                    num = int(c.name.split("-")[-1])
+                    current_ticket_nums.append(num)
+                except ValueError:
+                    pass
+        ticket_num = 1
+        while ticket_num in current_ticket_nums:
+            ticket_num += 1
+        
+        channel_name = f"shop-ticket-{ticket_num:03d}"
+        
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
+        }
+        
+        if emp_role_id and guild.get_role(emp_role_id):
+            overwrites[guild.get_role(emp_role_id)] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        if mgr_role_id and guild.get_role(mgr_role_id):
+            overwrites[guild.get_role(mgr_role_id)] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        if mention_role_id and guild.get_role(mention_role_id):
+            overwrites[guild.get_role(mention_role_id)] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            
+        try:
+            ticket_channel = await guild.create_text_channel(
+                name=channel_name,
+                category=interaction.channel.category,
+                overwrites=overwrites
+            )
+            
+            mentions = [interaction.user.mention]
+            if mention_role_id and guild.get_role(mention_role_id):
+                mentions.append(f"<@&{mention_role_id}>")
+            else:
+                if emp_role_id and guild.get_role(emp_role_id):
+                    mentions.append(f"<@&{emp_role_id}>")
+                if mgr_role_id and guild.get_role(mgr_role_id):
+                    mentions.append(f"<@&{mgr_role_id}>")
+            mention_str = " ".join(mentions)
+            
+            embed = discord.Embed(
+                title="🛒 ショップお問い合わせチケット",
+                description=(
+                    f"**件名:** {self.subject.value}\n\n"
+                    f"**内容:**\n{self.details.value}\n\n"
+                    f"**作成者:** {interaction.user.mention}\n\n"
+                    "内容の確認はこちらのチャンネルで行ってください。\n"
+                    "完了したら下のボタンでチケットを閉じることができます。"
+                ),
+                color=discord.Color.gold()
+            )
+            
+            from cogs.tickets import TicketControlView
+            await ticket_channel.send(content=mention_str, embed=embed, view=TicketControlView())
+            await interaction.followup.send(f"お問い合わせチャンネル {ticket_channel.mention} を作成しました。", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"チケットの作成に失敗しました: {e}", ephemeral=True)
+
 class ShopPanelView(discord.ui.View):
     def __init__(self, bot):
         super().__init__(timeout=None)
@@ -300,59 +389,13 @@ class ShopPanelView(discord.ui.View):
                 if reward_roles:
                     reward_text = "、".join(reward_roles)
                 
-            embed.add_field(name=f"🛒 {item['name']} (価格: {item['price']}円)", value=f"**用途:** {item['usage']}\n**対象:** {target_text}\n**購入品:** {reward_text}", inline=False)
+            embed.add_field(name=f"🛒 {item['name']} (価格: {item['price']:,} {config.CURRENCY_NAME})", value=f"**用途:** {item['usage']}\n**対象:** {target_text}\n**購入品:** {reward_text}", inline=False)
         
         await interaction.followup.send(embed=embed, view=ShopItemSelectView(items, "buy"), ephemeral=True)
 
     @discord.ui.button(label="お問い合わせ", style=discord.ButtonStyle.secondary, emoji="✉️", custom_id="shop_panel_ticket_btn")
     async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        guild = interaction.guild
-        settings = await database.get_shop_settings(guild.id)
-        emp_role_id = settings.get("employee_role_id")
-        mgr_role_id = settings.get("manager_role_id")
-        
-        current_ticket_nums = []
-        for c in guild.text_channels:
-            if c.name.lower().startswith("shop-ticket-"):
-                try:
-                    num = int(c.name.split("-")[-1])
-                    current_ticket_nums.append(num)
-                except ValueError:
-                    pass
-        ticket_num = 1
-        while ticket_num in current_ticket_nums:
-            ticket_num += 1
-        
-        channel_name = f"Shop-ticket-{ticket_num:03d}"
-        
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(read_messages=False),
-            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
-            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
-        }
-        
-        if emp_role_id and guild.get_role(emp_role_id):
-            overwrites[guild.get_role(emp_role_id)] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
-        if mgr_role_id and guild.get_role(mgr_role_id):
-            overwrites[guild.get_role(mgr_role_id)] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
-            
-        try:
-            ticket_channel = await guild.create_text_channel(
-                name=channel_name,
-                category=interaction.channel.category,
-                overwrites=overwrites
-            )
-            
-            mentions = []
-            if emp_role_id: mentions.append(f"<@&{emp_role_id}>")
-            if mgr_role_id: mentions.append(f"<@&{mgr_role_id}>")
-            mention_str = " ".join(mentions) if mentions else ""
-            
-            await ticket_channel.send(f"{interaction.user.mention} ショップに関するお問い合わせチケットを作成しました。\n{mention_str}")
-            await interaction.followup.send(f"お問い合わせチャンネル {ticket_channel.mention} を作成しました。", ephemeral=True)
-        except Exception as e:
-            await interaction.followup.send(f"チケットの作成に失敗しました: {e}", ephemeral=True)
+        await interaction.response.send_modal(ShopInquiryModal(self.bot))
 
     @discord.ui.button(label="従業員専用", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="shop_panel_employee_btn")
     async def employee_panel(self, interaction: discord.Interaction, button: discord.ui.Button):
