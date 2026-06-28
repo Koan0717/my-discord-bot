@@ -249,6 +249,37 @@ class Logging(commands.Cog):
                 await database.add_evaluation_period(after.id, start_time, end_time)
                 print(f"[Evaluation] Started for {after.display_name}: {start_time} to {end_time}")
 
+        # 評価落ちロール付与検知
+        eval_failed_role = config.get_role_by_setting(self.bot, after.guild, "EVALUATION_FAILED_ROLE_ID", config.EVALUATION_FAILED_ROLE_NAME)
+        if eval_failed_role and eval_failed_role in after.roles and eval_failed_role not in before.roles:
+            await asyncio.sleep(1)
+            moderator = None
+            reason = "基準未到達"
+            is_manual = True
+            try:
+                async for entry in after.guild.audit_logs(limit=5, action=discord.AuditLogAction.member_role_update):
+                    if entry.target.id == after.id:
+                        if eval_failed_role in entry.after.roles and eval_failed_role not in entry.before.roles:
+                            moderator = entry.user
+                            if entry.reason:
+                                if entry.reason == "通貨マイナスになったため":
+                                    is_manual = False
+                                else:
+                                    reason = f"基準未到達 ({entry.reason})"
+                            break
+            except Exception as e:
+                print(f"[Evaluation Failure Log] Failed to fetch audit log: {e}")
+            
+            if is_manual:
+                embed = discord.Embed(
+                    title="📉 評価落ち",
+                    description=f"{after.mention} が評価落ちしました。",
+                    color=discord.Color.red()
+                )
+                embed.add_field(name="理由", value=reason, inline=False)
+                embed.add_field(name="実行者", value=moderator.mention if moderator else "不明", inline=False)
+                await config.send_log(after.guild, "evaluation_failure", embed)
+
         # タイムアウト検知ロジック
         guild = after.guild
         if before.timed_out_until != after.timed_out_until:

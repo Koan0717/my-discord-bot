@@ -5,6 +5,7 @@ import database
 import config
 import datetime
 import os
+import asyncio
 
 # 他の Cog / View のインポート
 from cogs.reaction_roles import CustomRolePanelSetupModal
@@ -13,6 +14,31 @@ from cogs.rooms import MainInnPanelView, TempInnPanelView, LuxuryInnPanelView, C
 from cogs.gambling import ChinchiroView, CoinflipView, SlotView, BlackjackView, RouletteView
 
 _bot_instance = None
+
+async def trigger_evaluation_failure(guild, target, reason, executor, bot):
+    # 評価落ちロールを付与
+    role = config.get_role_by_setting(bot, guild, "EVALUATION_FAILED_ROLE_ID", config.EVALUATION_FAILED_ROLE_NAME)
+    if role and role not in target.roles:
+        try:
+            await target.add_roles(role, reason=reason)
+        except Exception as e:
+            print(f"[Evaluation] Failed to add role: {e}")
+            
+    # 自分にしか見えないチャット (DM)
+    try:
+        await target.send("通貨がマイナスになった為、評価落ちしました。")
+    except Exception:
+        pass
+        
+    # 評価落ちログ
+    embed = discord.Embed(
+        title="📉 評価落ち",
+        description=f"{target.mention} が評価落ちしました。",
+        color=discord.Color.red()
+    )
+    embed.add_field(name="理由", value=reason, inline=False)
+    embed.add_field(name="実行者", value=executor.mention if executor else "システム", inline=False)
+    await config.send_log(guild, "evaluation_failure", embed)
 
 # --- 運営権限チェック ---
 def is_admin():
@@ -142,7 +168,7 @@ class AdminCog(commands.Cog):
         await it.response.defer()
         
         for t in valid_targets:
-            await database.add_balance(t.id, amount)
+            new_bal = await database.add_balance(t.id, amount)
             await it.followup.send(f"✅ {t.mention} に {amount} {config.CURRENCY_NAME} 付与しました。")
             await config.send_economy_log(
                 it.guild,
@@ -150,11 +176,14 @@ class AdminCog(commands.Cog):
                 f"管理者の {it.user.mention} が {t.mention} に **{amount} {config.CURRENCY_NAME}** を付与しました。",
                 user=it.user
             )
+            if new_bal < 0:
+                await trigger_evaluation_failure(it.guild, t, "通貨マイナスになったため", it.user, self.bot)
 
     @AdminGroup.command(name="手動没収", description="【運営専用】指定したユーザーから通貨を直接没収します")
     @is_admin()
     async def remove(self, it, target: discord.Member, amount: int):
-        await database.remove_balance(target.id, amount)
+        new_bal = await database.get_balance(target.id) - amount
+        await database.remove_balance(target.id, amount, force=True)
         await it.response.send_message(f"✅ {target.mention} から {amount} {config.CURRENCY_NAME} 没収しました。", ephemeral=True)
         await config.send_economy_log(
             it.guild,
@@ -163,6 +192,8 @@ class AdminCog(commands.Cog):
             user=it.user,
             color=discord.Color.red()
         )
+        if new_bal < 0:
+            await trigger_evaluation_failure(it.guild, target, "通貨マイナスになったため", it.user, self.bot)
 
     @AdminGroup.command(name="所持金リセット", description="【運営専用】指定したユーザーの所持金を初期化します")
     @app_commands.checks.has_permissions(administrator=True)
@@ -883,7 +914,9 @@ class LogTypeSelect(discord.ui.Select):
             discord.SelectOption(label="🎙️ VC参加・退出", value="vc_join_leave", description="VC参加・移動・退出ログ"),
             discord.SelectOption(label="👥 メンバー入退", value="member_join_leave", description="サーバー参加・退出ログ"),
             discord.SelectOption(label="💰 通貨・経済", value="economy", description="通貨の付与・送金・お渡し等のログ"),
-            discord.SelectOption(label="👔 面接官ログ", value="interviewer", description="面接官の入界手続きなどのアクションログ")
+            discord.SelectOption(label="👔 面接官ログ", value="interviewer", description="面接官の入界手続きなどのアクションログ"),
+            discord.SelectOption(label="📉 評価落ちログ", value="evaluation_failure", description="評価落ちロール付与および通貨マイナス時のログ"),
+            discord.SelectOption(label="🛒 ショップログ", value="shop", description="ショップの商品追加・編集・削除・購入ログ")
         ]
         super().__init__(placeholder="設定するログの種類を選択...", min_values=1, max_values=1, options=options, row=0)
 
@@ -936,7 +969,9 @@ class RemoveLogSettingSelect(discord.ui.Select):
             "vc_join_leave": "VC参加・退出",
             "member_join_leave": "メンバー入退",
             "economy": "通貨・経済",
-            "interviewer": "面接官ログ"
+            "interviewer": "面接官ログ",
+            "evaluation_failure": "評価落ちログ",
+            "shop": "ショップログ"
         }
         for l_type, ch_id in settings.items():
             ch = guild.get_channel(ch_id)
@@ -995,7 +1030,8 @@ async def update_log_settings_config_view(interaction: discord.Interaction):
         "vc_join_leave": "🎙️ VC参加・退出",
         "member_join_leave": "👥 メンバー入退",
         "economy": "💰 通貨・経済",
-        "interviewer": "👔 面接官ログ"
+        "interviewer": "👔 面接官ログ",
+        "shop": "🛒 ショップログ"
     }
     
     settings_str = ""
@@ -2126,6 +2162,7 @@ class BotSetupMainSelect(discord.ui.Select):
             discord.SelectOption(label="👥 見習い・初級評価員", value="EVALUATOR_TIER1_ROLE_IDS", description="見習い・初級ランクの評価員ロール"),
             discord.SelectOption(label="👥 中級・上級評価員", value="EVALUATOR_TIER2_ROLE_IDS", description="中級・上級ランクの評価員ロール"),
             discord.SelectOption(label="👥 特級・統括評価員", value="EVALUATOR_TIER3_ROLE_IDS", description="特級・統括ランクの評価員ロール"),
+            discord.SelectOption(label="👥 評価落ちロール", value="EVALUATION_FAILED_ROLE_ID", description="通貨マイナスなどで付与される評価落ちロール"),
             discord.SelectOption(label="👥 新規メンバーロール", value="NEW_MEMBER_ROLE_ID", description="入界後の一般メンバーロール"),
             discord.SelectOption(label="👥 入界待機者ロール", value="PENDING_MEMBER_ROLE_ID", description="面接待ちメンバーのロール"),
             discord.SelectOption(label="👥 面接官ロール", value="INTERVIEWER_ROLE_IDS", description="面接を行える権限ロール"),
@@ -2231,6 +2268,7 @@ class BotSetupMainView(discord.ui.View):
         embed.add_field(name="👥 基本・管理権限設定", value=roles_text, inline=False)
         
         other_roles_text = (
+            f"・評価落ちロール: {format_setting_status(guild, 'EVALUATION_FAILED_ROLE_ID', bot)}\n"
             f"・見習い・初級評価員ロール: {format_setting_status(guild, 'EVALUATOR_TIER1_ROLE_IDS', bot)}\n"
             f"・中級・上級評価員ロール: {format_setting_status(guild, 'EVALUATOR_TIER2_ROLE_IDS', bot)}\n"
             f"・特級・統括評価員ロール: {format_setting_status(guild, 'EVALUATOR_TIER3_ROLE_IDS', bot)}\n"

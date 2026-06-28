@@ -9,37 +9,67 @@ class ShopItemRoleSetupView(discord.ui.View):
         self.bot = bot
         self.guild_id = guild_id
         self.item_id = item_id
-        self.target_role_id = None
-        self.reward_role_id = None
+        self.target_role_ids = []
+        self.reward_role_ids = []
         
-        self.target_select = discord.ui.RoleSelect(placeholder="対象ロールを選択（任意・未選択で誰でも）", min_values=1, max_values=1, custom_id=f"shop_item_target_{item_id}")
+        self.target_select = discord.ui.RoleSelect(
+            placeholder="対象ロールを選択（任意・未選択で誰でも）", 
+            min_values=1, 
+            max_values=25, 
+            custom_id=f"shop_item_target_{item_id}"
+        )
         self.target_select.callback = self.target_callback
         self.add_item(self.target_select)
         
-        self.reward_select = discord.ui.RoleSelect(placeholder="購入品ロールを選択（任意・未選択でなし）", min_values=1, max_values=1, custom_id=f"shop_item_reward_{item_id}")
+        self.reward_select = discord.ui.RoleSelect(
+            placeholder="購入品ロールを選択（任意・未選択でなし）", 
+            min_values=1, 
+            max_values=25, 
+            custom_id=f"shop_item_reward_{item_id}"
+        )
         self.reward_select.callback = self.reward_callback
         self.add_item(self.reward_select)
         
-        self.save_btn = discord.ui.Button(label="設定完了", style=discord.ButtonStyle.success, custom_id=f"shop_item_save_{item_id}")
+        self.save_btn = discord.ui.Button(
+            label="設定完了", 
+            style=discord.ButtonStyle.success, 
+            custom_id=f"shop_item_save_{item_id}"
+        )
         self.save_btn.callback = self.save_callback
         self.add_item(self.save_btn)
 
     async def target_callback(self, interaction: discord.Interaction):
-        self.target_role_id = self.target_select.values[0].id
+        self.target_role_ids = [role.id for role in self.target_select.values]
         await interaction.response.defer()
 
     async def reward_callback(self, interaction: discord.Interaction):
-        self.reward_role_id = self.reward_select.values[0].id
+        self.reward_role_ids = [role.id for role in self.reward_select.values]
         await interaction.response.defer()
 
     async def save_callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         item = await database.get_shop_item(self.item_id)
         if item:
-            await database.update_shop_item(self.item_id, item["name"], item["usage"], item["price"], self.target_role_id, self.reward_role_id)
-            await interaction.response.send_message(f"「{item['name']}」のロール設定を保存しました。", ephemeral=True)
+            await database.update_shop_item(self.item_id, item["name"], item["usage"], item["price"], self.target_role_ids, self.reward_role_ids)
+            await interaction.followup.send(f"「{item['name']}」のロール設定を保存しました。", ephemeral=True)
+            
+            # ロール設定更新ログの送信
+            target_mentions = [interaction.guild.get_role(r).mention for r in self.target_role_ids if interaction.guild.get_role(r)]
+            reward_mentions = [interaction.guild.get_role(r).mention for r in self.reward_role_ids if interaction.guild.get_role(r)]
+            target_str = "、".join(target_mentions) if target_mentions else "制限なし (誰でも)"
+            reward_str = "、".join(reward_mentions) if reward_mentions else "なし"
+            
+            embed = discord.Embed(title="🛒 商品ロール設定更新", color=discord.Color.orange())
+            embed.add_field(name="実行者", value=f"{interaction.user.mention} (ID: {interaction.user.id})", inline=False)
+            embed.add_field(name="商品ID", value=str(self.item_id), inline=True)
+            embed.add_field(name="商品名", value=item["name"], inline=True)
+            embed.add_field(name="対象ロール", value=target_str, inline=True)
+            embed.add_field(name="購入品ロール", value=reward_str, inline=True)
+            await config.send_log(interaction.guild, "shop", embed)
+            
             self.stop()
         else:
-            await interaction.response.send_message("商品の取得に失敗しました。", ephemeral=True)
+            await interaction.followup.send("商品の取得に失敗しました。", ephemeral=True)
 
 class ShopItemAddModal(discord.ui.Modal, title="商品の追加"):
     name = discord.ui.TextInput(label="商品名", placeholder="商品名を入力してください", required=True)
@@ -57,15 +87,25 @@ class ShopItemAddModal(discord.ui.Modal, title="商品の追加"):
             if price_val < 0:
                 return await interaction.response.send_message("価格は0以上である必要があります。", ephemeral=True)
             
+            await interaction.response.defer(ephemeral=True)
             item_id = await database.add_shop_item(self.guild_id, self.name.value, self.usage.value, price_val)
             if item_id:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     f"商品「{self.name.value}」の基本情報を追加しました。続いて、対象ロールと購入品ロールを設定してください（任意）。", 
                     view=ShopItemRoleSetupView(self.bot, self.guild_id, item_id), 
                     ephemeral=True
                 )
+                
+                # 商品追加ログの送信
+                embed = discord.Embed(title="🛒 商品追加", color=discord.Color.green())
+                embed.add_field(name="実行者", value=f"{interaction.user.mention} (ID: {interaction.user.id})", inline=False)
+                embed.add_field(name="商品ID", value=str(item_id), inline=True)
+                embed.add_field(name="商品名", value=self.name.value, inline=True)
+                embed.add_field(name="価格", value=f"{price_val:,}円", inline=True)
+                embed.add_field(name="用途", value=self.usage.value, inline=False)
+                await config.send_log(interaction.guild, "shop", embed)
             else:
-                await interaction.response.send_message("商品の追加に失敗しました。", ephemeral=True)
+                await interaction.followup.send("商品の追加に失敗しました。", ephemeral=True)
         except ValueError:
             await interaction.response.send_message("価格は数値で入力してください。", ephemeral=True)
 
@@ -87,12 +127,29 @@ class ShopItemEditModal(discord.ui.Modal, title="商品の編集"):
     async def on_submit(self, interaction: discord.Interaction):
         try:
             price_val = int(self.price.value)
-            await database.update_shop_item(self.item["item_id"], self.name.value, self.usage.value, price_val, self.item.get("target_role_id"), self.item.get("reward_role_id"))
-            await interaction.response.send_message(
+            await interaction.response.defer(ephemeral=True)
+            await database.update_shop_item(
+                self.item["item_id"], 
+                self.name.value, 
+                self.usage.value, 
+                price_val, 
+                self.item.get("target_role_ids"), 
+                self.item.get("reward_role_ids")
+            )
+            await interaction.followup.send(
                 f"商品「{self.name.value}」の基本情報を更新しました。ロールを再設定する場合は以下のメニューから選択してください。", 
                 view=ShopItemRoleSetupView(self.bot, self.guild_id, self.item["item_id"]), 
                 ephemeral=True
             )
+            
+            # 商品情報編集ログの送信
+            embed = discord.Embed(title="🛒 商品情報編集", color=discord.Color.blue())
+            embed.add_field(name="実行者", value=f"{interaction.user.mention} (ID: {interaction.user.id})", inline=False)
+            embed.add_field(name="商品ID", value=str(self.item["item_id"]), inline=True)
+            embed.add_field(name="商品名", value=self.name.value, inline=True)
+            embed.add_field(name="価格", value=f"{price_val:,}円", inline=True)
+            embed.add_field(name="用途", value=self.usage.value, inline=False)
+            await config.send_log(interaction.guild, "shop", embed)
         except ValueError:
             await interaction.response.send_message("価格は数値で入力してください。", ephemeral=True)
 
@@ -110,45 +167,79 @@ class ShopItemSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         item_id = int(self.values[0])
-        item = await database.get_shop_item(item_id)
-        if not item:
-            return await interaction.response.send_message("商品が見つかりませんでした。", ephemeral=True)
-
         if self.action == "edit":
+            item = await database.get_shop_item(item_id)
+            if not item:
+                return await interaction.response.send_message("商品が見つかりませんでした。", ephemeral=True)
             await interaction.response.send_modal(ShopItemEditModal(item, interaction.client, interaction.guild_id))
-        elif self.action == "delete":
-            await database.delete_shop_item(item_id)
-            await interaction.response.send_message(f"商品「{item['name']}」を削除しました。", ephemeral=True)
-        elif self.action == "buy":
-            # 対象ロールチェック
-            target_role_id = item.get("target_role_id")
-            if target_role_id:
-                user_role_ids = [r.id for r in interaction.user.roles]
-                if target_role_id not in user_role_ids:
-                    return await interaction.response.send_message("この商品は対象のロールを持っていないため購入できません。", ephemeral=True)
+        else:
+            await interaction.response.defer(ephemeral=True)
+            item = await database.get_shop_item(item_id)
+            if not item:
+                return await interaction.followup.send("商品が見つかりませんでした。", ephemeral=True)
 
-            # 購入処理
-            user_balance = await database.get_balance(interaction.user.id)
-            if user_balance < item["price"]:
-                return await interaction.response.send_message("所持金が足りません。", ephemeral=True)
-            
-            # 引き落としとアイテム付与履歴
-            await database.add_balance(interaction.user.id, -item["price"])
-            await database.add_user_item(interaction.user.id, item["item_id"])
-            
-            # ロール付与
-            reward_role_id = item.get("reward_role_id")
-            added_role_msg = ""
-            if reward_role_id:
-                reward_role = interaction.guild.get_role(reward_role_id)
-                if reward_role:
-                    try:
-                        await interaction.user.add_roles(reward_role)
-                        added_role_msg = f"\n特典ロール「{reward_role.name}」が付与されました！"
-                    except discord.Forbidden:
-                        added_role_msg = f"\n特典ロールの付与に失敗しました（Botの権限が不足しています）。"
-            
-            await interaction.response.send_message(f"🎉 商品「{item['name']}」を購入しました！{added_role_msg}", ephemeral=True)
+            if self.action == "delete":
+                await database.delete_shop_item(item_id)
+                await interaction.followup.send(f"商品「{item['name']}」を削除しました。", ephemeral=True)
+                
+                # 商品削除ログの送信
+                embed = discord.Embed(title="🛒 商品削除", color=discord.Color.red())
+                embed.add_field(name="実行者", value=f"{interaction.user.mention} (ID: {interaction.user.id})", inline=False)
+                embed.add_field(name="商品ID", value=str(item_id), inline=True)
+                embed.add_field(name="商品名", value=item["name"], inline=True)
+                embed.add_field(name="価格", value=f"{item['price']:,}円", inline=True)
+                await config.send_log(interaction.guild, "shop", embed)
+                
+            elif self.action == "buy":
+                # 対象ロールチェック
+                target_role_ids = item.get("target_role_ids") or []
+                if target_role_ids:
+                    user_role_ids = [r.id for r in interaction.user.roles]
+                    if not any(rid in user_role_ids for rid in target_role_ids):
+                        return await interaction.followup.send("この商品は対象のロールを持っていないため購入できません。", ephemeral=True)
+
+                # 購入処理
+                user_balance = await database.get_balance(interaction.user.id)
+                if user_balance < item["price"]:
+                    return await interaction.followup.send("所持金が足りません。", ephemeral=True)
+                
+                # 引き落としとアイテム付与履歴
+                await database.add_balance(interaction.user.id, -item["price"])
+                await database.add_user_item(interaction.user.id, item["item_id"])
+                
+                # ロール付与
+                reward_role_ids = item.get("reward_role_ids") or []
+                added_role_msg = ""
+                succeeded_roles = []
+                failed_roles = []
+                if reward_role_ids:
+                    for rid in reward_role_ids:
+                        reward_role = interaction.guild.get_role(rid)
+                        if reward_role:
+                            try:
+                                await interaction.user.add_roles(reward_role)
+                                succeeded_roles.append(reward_role.name)
+                            except discord.Forbidden:
+                                failed_roles.append(reward_role.name)
+                    
+                    if succeeded_roles:
+                        added_role_msg += f"\n特典ロール「{'、'.join(succeeded_roles)}」が付与されました！"
+                    if failed_roles:
+                        added_role_msg += f"\n特典ロール「{'、'.join(failed_roles)}」の付与に失敗しました（Botの権限が不足しています）。"
+                
+                await interaction.followup.send(f"🎉 商品「{item['name']}」を購入しました！{added_role_msg}", ephemeral=True)
+                
+                # 商品購入ログの送信
+                embed = discord.Embed(title="🛒 商品購入", color=discord.Color.gold())
+                embed.add_field(name="購入者", value=f"{interaction.user.mention} (ID: {interaction.user.id})", inline=False)
+                embed.add_field(name="商品ID", value=str(item_id), inline=True)
+                embed.add_field(name="商品名", value=item["name"], inline=True)
+                embed.add_field(name="支払額", value=f"{item['price']:,}円", inline=True)
+                if succeeded_roles:
+                    embed.add_field(name="付与ロール", value="、".join(succeeded_roles), inline=False)
+                if failed_roles:
+                    embed.add_field(name="付与失敗ロール (権限不足等)", value="、".join(failed_roles), inline=False)
+                await config.send_log(interaction.guild, "shop", embed)
 
 class ShopItemSelectView(discord.ui.View):
     def __init__(self, items, action):
@@ -167,17 +258,19 @@ class ShopEmployeeView(discord.ui.View):
 
     @discord.ui.button(label="商品を編集", style=discord.ButtonStyle.primary, emoji="✏️")
     async def edit_item_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
         items = await database.get_shop_items(self.guild_id)
         if not items:
-            return await interaction.response.send_message("編集できる商品がありません。", ephemeral=True)
-        await interaction.response.send_message("編集する商品を選択してください:", view=ShopItemSelectView(items, "edit"), ephemeral=True)
+            return await interaction.followup.send("編集できる商品がありません。", ephemeral=True)
+        await interaction.followup.send("編集する商品を選択してください:", view=ShopItemSelectView(items, "edit"), ephemeral=True)
 
     @discord.ui.button(label="商品を削除", style=discord.ButtonStyle.danger, emoji="🗑️")
     async def delete_item_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
         items = await database.get_shop_items(self.guild_id)
         if not items:
-            return await interaction.response.send_message("削除できる商品がありません。", ephemeral=True)
-        await interaction.response.send_message("削除する商品を選択してください:", view=ShopItemSelectView(items, "delete"), ephemeral=True)
+            return await interaction.followup.send("削除できる商品がありません。", ephemeral=True)
+        await interaction.followup.send("削除する商品を選択してください:", view=ShopItemSelectView(items, "delete"), ephemeral=True)
 
 class ShopPanelView(discord.ui.View):
     def __init__(self, bot):
@@ -186,28 +279,34 @@ class ShopPanelView(discord.ui.View):
 
     @discord.ui.button(label="ショップを開く", style=discord.ButtonStyle.primary, emoji="🛒", custom_id="shop_panel_open_btn")
     async def open_shop(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
         items = await database.get_shop_items(interaction.guild_id)
         if not items:
-            return await interaction.response.send_message("現在販売中の商品はありません。", ephemeral=True)
+            return await interaction.followup.send("現在販売中の商品はありません。", ephemeral=True)
         
         embed = discord.Embed(title="🛒 ショップ", description="購入したい商品を選択してください。", color=discord.Color.gold())
         for item in items:
+            target_role_ids = item.get("target_role_ids") or []
             target_text = "誰でも"
-            if item.get("target_role_id"):
-                target_role = interaction.guild.get_role(item["target_role_id"])
-                target_text = target_role.mention if target_role else "不明なロール"
+            if target_role_ids:
+                target_roles = [interaction.guild.get_role(rid).mention for rid in target_role_ids if interaction.guild.get_role(rid)]
+                if target_roles:
+                    target_text = "、".join(target_roles)
             
+            reward_role_ids = item.get("reward_role_ids") or []
             reward_text = "なし"
-            if item.get("reward_role_id"):
-                reward_role = interaction.guild.get_role(item["reward_role_id"])
-                reward_text = reward_role.mention if reward_role else "不明なロール"
+            if reward_role_ids:
+                reward_roles = [interaction.guild.get_role(rid).mention for rid in reward_role_ids if interaction.guild.get_role(rid)]
+                if reward_roles:
+                    reward_text = "、".join(reward_roles)
                 
             embed.add_field(name=f"🛒 {item['name']} (価格: {item['price']}円)", value=f"**用途:** {item['usage']}\n**対象:** {target_text}\n**購入品:** {reward_text}", inline=False)
         
-        await interaction.response.send_message(embed=embed, view=ShopItemSelectView(items, "buy"), ephemeral=True)
+        await interaction.followup.send(embed=embed, view=ShopItemSelectView(items, "buy"), ephemeral=True)
 
     @discord.ui.button(label="お問い合わせ", style=discord.ButtonStyle.secondary, emoji="✉️", custom_id="shop_panel_ticket_btn")
     async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         settings = await database.get_shop_settings(guild.id)
         emp_role_id = settings.get("employee_role_id")
@@ -251,14 +350,13 @@ class ShopPanelView(discord.ui.View):
             mention_str = " ".join(mentions) if mentions else ""
             
             await ticket_channel.send(f"{interaction.user.mention} ショップに関するお問い合わせチケットを作成しました。\n{mention_str}")
-            await interaction.response.send_message(f"お問い合わせチャンネル {ticket_channel.mention} を作成しました。", ephemeral=True)
+            await interaction.followup.send(f"お問い合わせチャンネル {ticket_channel.mention} を作成しました。", ephemeral=True)
         except Exception as e:
-            await interaction.response.send_message(f"チケットの作成に失敗しました: {e}", ephemeral=True)
-
-
+            await interaction.followup.send(f"チケットの作成に失敗しました: {e}", ephemeral=True)
 
     @discord.ui.button(label="従業員専用", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="shop_panel_employee_btn")
     async def employee_panel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
         settings = await database.get_shop_settings(interaction.guild_id)
         emp_role_id = settings.get("employee_role_id")
         mgr_role_id = settings.get("manager_role_id")
@@ -269,13 +367,13 @@ class ShopPanelView(discord.ui.View):
         is_mgr = mgr_role_id in user_roles or interaction.user.guild_permissions.administrator
         
         if not (is_emp or is_mgr):
-            return await interaction.response.send_message("この機能を使用する権限がありません。", ephemeral=True)
+            return await interaction.followup.send("この機能を使用する権限がありません。", ephemeral=True)
             
         if is_mgr:
             embed = discord.Embed(title="🔒 従業員・統括専用パネル", description="商品の追加や編集、削除を行えます。", color=discord.Color.red())
-            await interaction.response.send_message(embed=embed, view=ShopEmployeeView(self.bot, interaction.guild_id), ephemeral=True)
+            await interaction.followup.send(embed=embed, view=ShopEmployeeView(self.bot, interaction.guild_id), ephemeral=True)
         else:
-            await interaction.response.send_message("従業員として認証されました。現在、従業員向けの操作パネルは統括機能のみ提供されています。", ephemeral=True)
+            await interaction.followup.send("従業員として認証されました。現在、従業員向けの操作パネルは統括機能のみ提供されています。", ephemeral=True)
 
 class ShopCog(commands.Cog):
     def __init__(self, bot):
