@@ -297,7 +297,7 @@ class ShopInquiryModal(discord.ui.Modal, title="ショップお問い合わせ")
         settings = await database.get_shop_settings(guild.id)
         emp_role_id = settings.get("employee_role_id")
         mgr_role_id = settings.get("manager_role_id")
-        mention_role_id = settings.get("inquiry_mention_role_id")
+        mention_role_ids = settings.get("inquiry_mention_role_ids") or []
         
         current_ticket_nums = []
         for c in guild.text_channels:
@@ -323,8 +323,10 @@ class ShopInquiryModal(discord.ui.Modal, title="ショップお問い合わせ")
             overwrites[guild.get_role(emp_role_id)] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
         if mgr_role_id and guild.get_role(mgr_role_id):
             overwrites[guild.get_role(mgr_role_id)] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
-        if mention_role_id and guild.get_role(mention_role_id):
-            overwrites[guild.get_role(mention_role_id)] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        for m_id in mention_role_ids:
+            m_role = guild.get_role(m_id)
+            if m_role:
+                overwrites[m_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
             
         try:
             ticket_channel = await guild.create_text_channel(
@@ -334,8 +336,12 @@ class ShopInquiryModal(discord.ui.Modal, title="ショップお問い合わせ")
             )
             
             mentions = [interaction.user.mention]
-            if mention_role_id and guild.get_role(mention_role_id):
-                mentions.append(f"<@&{mention_role_id}>")
+            valid_mentions = []
+            for m_id in mention_role_ids:
+                if guild.get_role(m_id):
+                    valid_mentions.append(f"<@&{m_id}>")
+            if valid_mentions:
+                mentions.extend(valid_mentions)
             else:
                 if emp_role_id and guild.get_role(emp_role_id):
                     mentions.append(f"<@&{emp_role_id}>")

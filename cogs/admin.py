@@ -318,7 +318,13 @@ class ShopSettingsConfigView(discord.ui.View):
         shop_settings = await database.get_shop_settings(self.guild_id)
         emp_role = guild.get_role(shop_settings["employee_role_id"]) if shop_settings["employee_role_id"] else None
         mgr_role = guild.get_role(shop_settings["manager_role_id"]) if shop_settings["manager_role_id"] else None
-        mention_role = guild.get_role(shop_settings["inquiry_mention_role_id"]) if shop_settings.get("inquiry_mention_role_id") else None
+        
+        mention_roles_text = "未設定"
+        mention_role_ids = shop_settings.get("inquiry_mention_role_ids") or []
+        if mention_role_ids:
+            mentions = [guild.get_role(rid).mention for rid in mention_role_ids if guild.get_role(rid)]
+            if mentions:
+                mention_roles_text = ", ".join(mentions)
         
         embed = discord.Embed(
             title="🛒 ショップ設定",
@@ -327,7 +333,7 @@ class ShopSettingsConfigView(discord.ui.View):
         )
         embed.add_field(name="ショップ従業員ロール", value=emp_role.mention if emp_role else "未設定", inline=False)
         embed.add_field(name="ショップ統括ロール", value=mgr_role.mention if mgr_role else "未設定", inline=False)
-        embed.add_field(name="お問い合わせ通知先メンション", value=mention_role.mention if mention_role else "未設定", inline=False)
+        embed.add_field(name="お問い合わせ通知先メンション", value=mention_roles_text, inline=False)
         return embed
 
     @discord.ui.button(label="従業員ロールを設定", style=discord.ButtonStyle.primary, custom_id="persistent_admin_shop_emp_btn")
@@ -361,33 +367,46 @@ class ShopRoleSelectView(discord.ui.View):
         
         if role_type == "employee":
             placeholder = "従業員ロールを選択..."
+            max_values = 1
         elif role_type == "manager":
             placeholder = "統括ロールを選択..."
+            max_values = 1
         else:
-            placeholder = "通知先メンションロールを選択..."
+            placeholder = "通知先メンションロールを選択（複数可）..."
+            max_values = 10
             
-        self.select = discord.ui.RoleSelect(placeholder=placeholder, min_values=1, max_values=1, custom_id="shop_role_select")
+        self.select = discord.ui.RoleSelect(placeholder=placeholder, min_values=1, max_values=max_values, custom_id="shop_role_select")
         self.select.callback = self.role_select_callback
         self.add_item(self.select)
 
+        # Add manual ID button
+        btn_manual = discord.ui.Button(label="手動でIDを入力", style=discord.ButtonStyle.secondary, custom_id="shop_role_manual_btn")
+        btn_manual.callback = self.manual_input_callback
+        self.add_item(btn_manual)
+
+    async def manual_input_callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(ShopRoleModal(self.bot, self.guild_id, self.role_type))
+
     async def role_select_callback(self, interaction: discord.Interaction):
-        role = self.select.values[0]
-        
         settings = await database.get_shop_settings(self.guild_id)
         emp_role_id = settings["employee_role_id"]
         mgr_role_id = settings["manager_role_id"]
-        mention_role_id = settings.get("inquiry_mention_role_id")
+        mention_role_ids = settings.get("inquiry_mention_role_ids") or []
         
         if self.role_type == "employee":
-            emp_role_id = role.id
+            emp_role_id = self.select.values[0].id
+            role_str = self.select.values[0].mention
         elif self.role_type == "manager":
-            mgr_role_id = role.id
+            mgr_role_id = self.select.values[0].id
+            role_str = self.select.values[0].mention
         else:
-            mention_role_id = role.id
+            mention_role_ids = [role.id for role in self.select.values]
+            role_str = ", ".join([role.mention for role in self.select.values])
             
-        await database.set_shop_settings(self.guild_id, emp_role_id, mgr_role_id, mention_role_id)
+        first_mention_role_id = mention_role_ids[0] if mention_role_ids else None
+        await database.set_shop_settings(self.guild_id, emp_role_id, mgr_role_id, first_mention_role_id, mention_role_ids)
         role_type_ja = "従業員" if self.role_type == "employee" else ("統括" if self.role_type == "manager" else "お問い合わせ通知先メンション")
-        await interaction.response.send_message(f"{role_type_ja}ロールを {role.mention} に設定しました。", ephemeral=True)
+        await interaction.response.send_message(f"{role_type_ja}ロールを {role_str} に設定しました。", ephemeral=True)
         
         try:
             view = ShopSettingsConfigView(self.bot, self.guild_id)
@@ -411,33 +430,50 @@ class ShopRoleModal(discord.ui.Modal):
 
         self.role_id = discord.ui.TextInput(
             label="ロールID",
-            placeholder="ロールのIDを入力してください",
+            placeholder="IDを入力（複数指定時はスペースかカンマ区切り）",
             required=True
         )
         self.add_item(self.role_id)
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            role_id = int(self.role_id.value)
-            role = interaction.guild.get_role(role_id)
-            if not role:
-                return await interaction.response.send_message("無効なロールIDです。", ephemeral=True)
+            raw_val = self.role_id.value.replace(",", " ").replace(";", " ")
+            role_id_strs = raw_val.split()
+            
+            role_ids = []
+            roles = []
+            for rid_str in role_id_strs:
+                try:
+                    rid = int(rid_str)
+                    role = interaction.guild.get_role(rid)
+                    if role:
+                        role_ids.append(rid)
+                        roles.append(role)
+                except ValueError:
+                    pass
+                    
+            if not role_ids:
+                return await interaction.response.send_message("有効なロールIDが入力されませんでした。", ephemeral=True)
             
             settings = await database.get_shop_settings(self.guild_id)
             emp_role_id = settings["employee_role_id"]
             mgr_role_id = settings["manager_role_id"]
-            mention_role_id = settings.get("inquiry_mention_role_id")
+            mention_role_ids = settings.get("inquiry_mention_role_ids") or []
             
             if self.role_type == "employee":
-                emp_role_id = role_id
+                emp_role_id = role_ids[0]
+                role_str = roles[0].mention
             elif self.role_type == "manager":
-                mgr_role_id = role_id
+                mgr_role_id = role_ids[0]
+                role_str = roles[0].mention
             else:
-                mention_role_id = role_id
+                mention_role_ids = role_ids
+                role_str = ", ".join([r.mention for r in roles])
                 
-            await database.set_shop_settings(self.guild_id, emp_role_id, mgr_role_id, mention_role_id)
+            first_mention_role_id = mention_role_ids[0] if mention_role_ids else None
+            await database.set_shop_settings(self.guild_id, emp_role_id, mgr_role_id, first_mention_role_id, mention_role_ids)
             role_type_ja = "従業員" if self.role_type == "employee" else ("統括" if self.role_type == "manager" else "お問い合わせ通知先メンション")
-            await interaction.response.send_message(f"{role_type_ja}ロールを {role.mention} に設定しました。", ephemeral=True)
+            await interaction.response.send_message(f"{role_type_ja}ロールを {role_str} に設定しました。", ephemeral=True)
             
             try:
                 view = ShopSettingsConfigView(self.bot, self.guild_id)
