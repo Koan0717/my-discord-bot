@@ -226,7 +226,8 @@ async def setup_db():
             CREATE TABLE IF NOT EXISTS shop_settings (
                 guild_id BIGINT PRIMARY KEY,
                 employee_role_id BIGINT,
-                manager_role_id BIGINT
+                manager_role_id BIGINT,
+                inquiry_mention_role_id BIGINT
             )
         ''')
 
@@ -255,6 +256,11 @@ async def setup_db():
             # 移行用の削除は ALTER TABLE shop_items DROP COLUMN IF EXISTS target はサポートされていないPostgreSQLのバージョンもあるため放置でOK
         except Exception as e:
             print(f"[Migration] shop_items migration warning: {e}")
+
+        try:
+            await conn.execute('ALTER TABLE shop_settings ADD COLUMN IF NOT EXISTS inquiry_mention_role_id BIGINT')
+        except Exception as e:
+            print(f"[Migration] shop_settings inquiry_mention_role_id migration warning: {e}")
 
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS user_items (
@@ -926,22 +932,31 @@ async def clear_antigrief_settings_field(guild_id: int, field_name: str):
 async def get_shop_settings(guild_id: int):
     p = await get_pool()
     async with p.acquire() as conn:
-        row = await conn.fetchrow('SELECT employee_role_id, manager_role_id FROM shop_settings WHERE guild_id = $1', guild_id)
+        row = await conn.fetchrow('SELECT employee_role_id, manager_role_id, inquiry_mention_role_id FROM shop_settings WHERE guild_id = $1', guild_id)
         if row:
-            return {"employee_role_id": row["employee_role_id"], "manager_role_id": row["manager_role_id"]}
+            try:
+                inquiry_val = row["inquiry_mention_role_id"]
+            except KeyError:
+                inquiry_val = None
+            return {
+                "employee_role_id": row["employee_role_id"], 
+                "manager_role_id": row["manager_role_id"],
+                "inquiry_mention_role_id": inquiry_val
+            }
         else:
-            return {"employee_role_id": None, "manager_role_id": None}
+            return {"employee_role_id": None, "manager_role_id": None, "inquiry_mention_role_id": None}
 
-async def set_shop_settings(guild_id: int, employee_role_id: int, manager_role_id: int):
+async def set_shop_settings(guild_id: int, employee_role_id: int, manager_role_id: int, inquiry_mention_role_id: int):
     p = await get_pool()
     async with p.acquire() as conn:
         await conn.execute('''
-            INSERT INTO shop_settings (guild_id, employee_role_id, manager_role_id)
-            VALUES ($1, $2, $3)
+            INSERT INTO shop_settings (guild_id, employee_role_id, manager_role_id, inquiry_mention_role_id)
+            VALUES ($1, $2, $3, $4)
             ON CONFLICT (guild_id) DO UPDATE SET
             employee_role_id = EXCLUDED.employee_role_id,
-            manager_role_id = EXCLUDED.manager_role_id
-        ''', guild_id, employee_role_id, manager_role_id)
+            manager_role_id = EXCLUDED.manager_role_id,
+            inquiry_mention_role_id = EXCLUDED.inquiry_mention_role_id
+        ''', guild_id, employee_role_id, manager_role_id, inquiry_mention_role_id)
 
 # ショップ商品関連
 async def get_shop_items(guild_id: int):
