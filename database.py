@@ -238,13 +238,20 @@ async def setup_db():
                 usage TEXT,
                 price INTEGER DEFAULT 0,
                 target_role_id BIGINT,
-                reward_role_id BIGINT
+                reward_role_id BIGINT,
+                target_role_ids BIGINT[],
+                reward_role_ids BIGINT[]
             )
         ''')
         
         try:
             await conn.execute('ALTER TABLE shop_items ADD COLUMN IF NOT EXISTS target_role_id BIGINT')
             await conn.execute('ALTER TABLE shop_items ADD COLUMN IF NOT EXISTS reward_role_id BIGINT')
+            await conn.execute('ALTER TABLE shop_items ADD COLUMN IF NOT EXISTS target_role_ids BIGINT[] DEFAULT \'{}\'')
+            await conn.execute('ALTER TABLE shop_items ADD COLUMN IF NOT EXISTS reward_role_ids BIGINT[] DEFAULT \'{}\'')
+            # Migrate existing data
+            await conn.execute("UPDATE shop_items SET target_role_ids = ARRAY[target_role_id] WHERE target_role_id IS NOT NULL AND (target_role_ids IS NULL OR target_role_ids = '{}')")
+            await conn.execute("UPDATE shop_items SET reward_role_ids = ARRAY[reward_role_id] WHERE reward_role_id IS NOT NULL AND (reward_role_ids IS NULL OR reward_role_ids = '{}')")
             # 移行用の削除は ALTER TABLE shop_items DROP COLUMN IF EXISTS target はサポートされていないPostgreSQLのバージョンもあるため放置でOK
         except Exception as e:
             print(f"[Migration] shop_items migration warning: {e}")
@@ -287,11 +294,12 @@ async def add_balance(user_id: int, amount: int):
     await get_user(user_id)
     p = await get_pool()
     async with p.acquire() as conn:
-        await conn.execute('UPDATE users SET balance = balance + $1 WHERE user_id = $2', amount, user_id)
+        new_balance = await conn.fetchval('UPDATE users SET balance = balance + $1 WHERE user_id = $2 RETURNING balance', amount, user_id)
+        return new_balance
 
-async def remove_balance(user_id: int, amount: int) -> bool:
+async def remove_balance(user_id: int, amount: int, force: bool = False) -> bool:
     current_balance = await get_balance(user_id)
-    if current_balance < amount:
+    if current_balance < amount and not force:
         return False
         
     p = await get_pool()
@@ -919,9 +927,55 @@ async def get_shop_settings(guild_id: int):
     p = await get_pool()
     async with p.acquire() as conn:
         row = await conn.fetchrow('SELECT employee_role_id, manager_role_id FROM shop_settings WHERE guild_id = $1', guild_id)
+        if row:
+            return {"employee_role_id": row["employee_role_id"], "manager_role_id": row["manager_role_id"]}
+        else:
+            return {"employee_role_id": None, "manager_role_id": None}
+
+async def set_shop_settings(guild_id: int, employee_role_id: int, manager_role_id: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
         await conn.execute('''
-            UPDATE shop_items SET name = $1, usage = $2, target = $3, price = $4 WHERE item_id = $5
-        ''', name, usage, target, price, item_id)
+            INSERT INTO shop_settings (guild_id, employee_role_id, manager_role_id)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (guild_id) DO UPDATE SET
+            employee_role_id = EXCLUDED.employee_role_id,
+            manager_role_id = EXCLUDED.manager_role_id
+        ''', guild_id, employee_role_id, manager_role_id)
+
+# ショップ商品関連
+async def get_shop_items(guild_id: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        rows = await conn.fetch('SELECT item_id, name, usage, price, target_role_ids, reward_role_ids FROM shop_items WHERE guild_id = $1 ORDER BY item_id ASC', guild_id)
+        return [dict(r) for r in rows]
+
+async def get_shop_item(item_id: int):
+    p = await get_pool()
+    async with p.acquire() as conn:
+        row = await conn.fetchrow('SELECT item_id, guild_id, name, usage, price, target_role_ids, reward_role_ids FROM shop_items WHERE item_id = $1', item_id)
+        return dict(row) if row else None
+
+async def add_shop_item(guild_id: int, name: str, usage: str, price: int, target_role_ids: list = None, reward_role_ids: list = None):
+    if target_role_ids is None: target_role_ids = []
+    if reward_role_ids is None: reward_role_ids = []
+    p = await get_pool()
+    async with p.acquire() as conn:
+        row = await conn.fetchrow('''
+            INSERT INTO shop_items (guild_id, name, usage, price, target_role_ids, reward_role_ids)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING item_id
+        ''', guild_id, name, usage, price, target_role_ids, reward_role_ids)
+        return dict(row)["item_id"] if row else None
+
+async def update_shop_item(item_id: int, name: str, usage: str, price: int, target_role_ids: list = None, reward_role_ids: list = None):
+    if target_role_ids is None: target_role_ids = []
+    if reward_role_ids is None: reward_role_ids = []
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('''
+            UPDATE shop_items SET name = $1, usage = $2, price = $3, target_role_ids = $4, reward_role_ids = $5 WHERE item_id = $6
+        ''', name, usage, price, target_role_ids, reward_role_ids, item_id)
 
 async def delete_shop_item(item_id: int):
     p = await get_pool()
@@ -948,54 +1002,3 @@ async def get_user_items(user_id: int):
             ORDER BY u.purchased_at DESC
         ''', user_id)
         return [dict(r) for r in rows]
-
-
-async def get_shop_settings(guild_id: int):
-    p = await get_pool()
-    async with p.acquire() as conn:
-        row = await conn.fetchrow('SELECT employee_role_id, manager_role_id FROM shop_settings WHERE guild_id = $1', guild_id)
-        if row:
-            return {"employee_role_id": row["employee_role_id"], "manager_role_id": row["manager_role_id"]}
-        else:
-            return {"employee_role_id": None, "manager_role_id": None}
-
-async def set_shop_settings(guild_id: int, employee_role_id: int, manager_role_id: int):
-    p = await get_pool()
-    async with p.acquire() as conn:
-        await conn.execute('''
-            INSERT INTO shop_settings (guild_id, employee_role_id, manager_role_id)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (guild_id) DO UPDATE SET
-            employee_role_id = EXCLUDED.employee_role_id,
-            manager_role_id = EXCLUDED.manager_role_id
-        ''', guild_id, employee_role_id, manager_role_id)
-
-# ショップ商品関連
-async def get_shop_items(guild_id: int):
-    p = await get_pool()
-    async with p.acquire() as conn:
-        rows = await conn.fetch('SELECT item_id, name, usage, price, target_role_id, reward_role_id FROM shop_items WHERE guild_id = $1 ORDER BY item_id ASC', guild_id)
-        return [dict(r) for r in rows]
-
-async def get_shop_item(item_id: int):
-    p = await get_pool()
-    async with p.acquire() as conn:
-        row = await conn.fetchrow('SELECT item_id, guild_id, name, usage, price, target_role_id, reward_role_id FROM shop_items WHERE item_id = $1', item_id)
-        return dict(row) if row else None
-
-async def add_shop_item(guild_id: int, name: str, usage: str, price: int, target_role_id: int = None, reward_role_id: int = None):
-    p = await get_pool()
-    async with p.acquire() as conn:
-        row = await conn.fetchrow('''
-            INSERT INTO shop_items (guild_id, name, usage, price, target_role_id, reward_role_id)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING item_id
-        ''', guild_id, name, usage, price, target_role_id, reward_role_id)
-        return dict(row)["item_id"] if row else None
-
-async def update_shop_item(item_id: int, name: str, usage: str, price: int, target_role_id: int = None, reward_role_id: int = None):
-    p = await get_pool()
-    async with p.acquire() as conn:
-        await conn.execute('''
-            UPDATE shop_items SET name = $1, usage = $2, price = $3, target_role_id = $4, reward_role_id = $5 WHERE item_id = $6
-        ''', name, usage, price, target_role_id, reward_role_id, item_id)
