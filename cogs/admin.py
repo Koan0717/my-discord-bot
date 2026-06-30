@@ -523,9 +523,25 @@ class ManageShopSettingsButton(discord.ui.Button):
         await update_shop_settings_config_view(interaction, bot)
 
 
+class DowngradeGroup(app_commands.Group):
+    def __init__(self, bot):
+        super().__init__(name="評価落ち", description="評価落ちに関するコマンド")
+        self.bot = bot
+
+    @app_commands.command(name="実行", description="【運営専用】指定したユーザーを評価落ちさせます")
+    @app_commands.describe(target="対象メンバー", reason="評価落ちの理由")
+    async def downgrade_execute(self, interaction: discord.Interaction, target: discord.Member, reason: str):
+        if not config.has_admin_role(self.bot, interaction.user) and not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("このコマンドを実行する権限がありません（運営専用）。", ephemeral=True)
+            
+        await interaction.response.defer(ephemeral=True)
+        await trigger_evaluation_failure(interaction.guild, target, reason, interaction.user, self.bot)
+        await interaction.followup.send(f"✅ {target.mention} を評価落ちさせました（理由: {reason}）。", ephemeral=True)
+
 async def setup(bot):
     cog = AdminCog(bot)
     await bot.add_cog(cog)
+    bot.tree.add_command(DowngradeGroup(bot))
 
 # --- ヘルパーと設定用ビュー ---
 
@@ -1114,6 +1130,7 @@ async def update_log_settings_config_view(interaction: discord.Interaction):
         "member_join_leave": "👥 メンバー入退",
         "economy": "💰 通貨・経済",
         "interviewer": "👔 面接官ログ",
+        "evaluation_failure": "📉 評価落ちログ",
         "shop": "🛒 ショップログ"
     }
     
@@ -1170,7 +1187,9 @@ class ManageLogSettingsButton(discord.ui.Button):
             "vc_join_leave": "🎙️ VC参加・退出",
             "member_join_leave": "👥 メンバー入退",
             "economy": "💰 通貨・経済",
-            "interviewer": "👔 面接官ログ"
+            "interviewer": "👔 面接官ログ",
+            "evaluation_failure": "📉 評価落ちログ",
+            "shop": "🛒 ショップログ"
         }
         
         settings_str = ""

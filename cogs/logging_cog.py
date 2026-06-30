@@ -279,18 +279,15 @@ class Logging(commands.Cog):
         if eval_failed_role and eval_failed_role in after.roles and eval_failed_role not in before.roles:
             await asyncio.sleep(1)
             moderator = None
-            reason = "基準未到達"
+            reason = "評価基準未到達のため"
             is_manual = True
             try:
                 async for entry in after.guild.audit_logs(limit=5, action=discord.AuditLogAction.member_role_update):
                     if entry.target.id == after.id:
                         if eval_failed_role in entry.after.roles and eval_failed_role not in entry.before.roles:
                             moderator = entry.user
-                            if entry.reason:
-                                if entry.reason == "通貨マイナスになったため":
-                                    is_manual = False
-                                else:
-                                    reason = f"基準未到達 ({entry.reason})"
+                            if entry.reason == "通貨マイナスになったため":
+                                is_manual = False
                             break
             except Exception as e:
                 print(f"[Evaluation Failure Log] Failed to fetch audit log: {e}")
