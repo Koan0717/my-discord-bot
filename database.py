@@ -34,7 +34,8 @@ async def setup_db():
                 tc_xp INTEGER DEFAULT 0,
                 tc_level INTEGER DEFAULT 1,
                 vc_xp INTEGER DEFAULT 0,
-                vc_level INTEGER DEFAULT 1
+                vc_level INTEGER DEFAULT 1,
+                initial_issued BOOLEAN DEFAULT FALSE
             )
         ''')
         await conn.execute('''
@@ -55,17 +56,6 @@ async def setup_db():
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS auto_vc_triggers (
                 channel_id BIGINT PRIMARY KEY
-            )
-        ''')
-        await conn.execute('''
-            CREATE TABLE IF NOT EXISTS auto_vc_config (
-                channel_id BIGINT PRIMARY KEY,
-                base_name TEXT DEFAULT '',
-                allow_rename BOOLEAN DEFAULT TRUE,
-                include_owner_name BOOLEAN DEFAULT TRUE,
-                use_numbering BOOLEAN DEFAULT FALSE,
-                allow_limit_change BOOLEAN DEFAULT TRUE,
-                show_panel BOOLEAN DEFAULT TRUE
             )
         ''')
         await conn.execute('''
@@ -95,16 +85,9 @@ async def setup_db():
             print(f"[Migration] inquiry_panels migration warning: {e}")
 
         try:
-            await conn.execute('ALTER TABLE rooms ADD COLUMN IF NOT EXISTS trigger_channel_id BIGINT')
+            await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS initial_issued BOOLEAN DEFAULT FALSE')
         except Exception as e:
-            print(f"[Migration] rooms migration warning: {e}")
-
-        try:
-            await conn.execute('ALTER TABLE auto_vc_config ADD COLUMN IF NOT EXISTS show_panel BOOLEAN DEFAULT TRUE')
-        except Exception as e:
-            print(f"[Migration] auto_vc_config migration warning: {e}")
-
-
+            print(f"[Migration] users initial_issued migration warning: {e}")
 
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS level_role_rewards (
@@ -132,16 +115,6 @@ async def setup_db():
             ('高級宿', 24, 250000),
             ('カスタムVC', 24, 30000)
             ON CONFLICT (room_type, duration) DO NOTHING
-        ''')
-
-        await conn.execute('''
-            CREATE TABLE IF NOT EXISTS role_room_prices (
-                role_key TEXT NOT NULL,
-                room_type TEXT NOT NULL,
-                duration INTEGER NOT NULL,
-                price INTEGER NOT NULL,
-                PRIMARY KEY (role_key, room_type, duration)
-            )
         ''')
 
         await conn.execute('''
@@ -203,36 +176,10 @@ async def setup_db():
             await conn.execute('ALTER TABLE rank_settings ADD COLUMN IF NOT EXISTS blacklist_category_ids BIGINT[] NOT NULL DEFAULT \'{}\'')
         except Exception as e:
             print(f"[Migration] rank_settings migration warning: {e}")
-
-        await conn.execute('''
-            CREATE TABLE IF NOT EXISTS vc_coins_settings (
-                guild_id BIGINT PRIMARY KEY,
-                whitelist_channel_ids BIGINT[] NOT NULL DEFAULT '{}',
-                blacklist_channel_ids BIGINT[] NOT NULL DEFAULT '{}',
-                whitelist_category_ids BIGINT[] NOT NULL DEFAULT '{}',
-                blacklist_category_ids BIGINT[] NOT NULL DEFAULT '{}'
-            )
-        ''')
-
-        try:
-            await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS initial_issued BOOLEAN DEFAULT FALSE')
-        except Exception as e:
-            print(f"[Migration] users initial_issued migration warning: {e}")
-
         try:
             await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS evaluation_vc_time INTEGER DEFAULT 0')
         except Exception as e:
             print(f"[Migration] users evaluation_vc_time migration warning: {e}")
-
-        await conn.execute('''
-            CREATE TABLE IF NOT EXISTS interviewer_logs (
-                interviewer_id BIGINT,
-                target_user_id BIGINT,
-                guild_id BIGINT,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (interviewer_id, target_user_id)
-            )
-        ''')
 
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS user_evaluations (
@@ -253,11 +200,12 @@ async def setup_db():
         ''')
 
         await conn.execute('''
-            CREATE TABLE IF NOT EXISTS user_vc_durations (
-                user_id BIGINT,
-                category_id BIGINT,
-                duration_seconds INTEGER DEFAULT 0,
-                PRIMARY KEY (user_id, category_id)
+            CREATE TABLE IF NOT EXISTS interviewer_logs (
+                interviewer_id BIGINT,
+                target_user_id BIGINT,
+                guild_id BIGINT,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (interviewer_id, target_user_id)
             )
         ''')
 
@@ -274,14 +222,12 @@ async def setup_db():
         except Exception as e:
             print(f"[Migration] sticky_templates migration warning: {e}")
 
-
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS shop_settings (
                 guild_id BIGINT PRIMARY KEY,
                 employee_role_id BIGINT,
                 manager_role_id BIGINT,
-                inquiry_mention_role_id BIGINT,
-                inquiry_mention_role_ids BIGINT[] DEFAULT '{}'
+                inquiry_mention_role_id BIGINT
             )
         ''')
 
@@ -293,7 +239,9 @@ async def setup_db():
                 usage TEXT,
                 price INTEGER DEFAULT 0,
                 target_role_id BIGINT,
-                reward_role_id BIGINT
+                reward_role_id BIGINT,
+                target_role_ids BIGINT[],
+                reward_role_ids BIGINT[]
             )
         ''')
         
@@ -305,6 +253,7 @@ async def setup_db():
             # Migrate existing data
             await conn.execute("UPDATE shop_items SET target_role_ids = ARRAY[target_role_id] WHERE target_role_id IS NOT NULL AND (target_role_ids IS NULL OR target_role_ids = '{}')")
             await conn.execute("UPDATE shop_items SET reward_role_ids = ARRAY[reward_role_id] WHERE reward_role_id IS NOT NULL AND (reward_role_ids IS NULL OR reward_role_ids = '{}')")
+            # 移行用の削除は ALTER TABLE shop_items DROP COLUMN IF EXISTS target はサポートされていないPostgreSQLのバージョンもあるため放置でOK
         except Exception as e:
             print(f"[Migration] shop_items migration warning: {e}")
 
@@ -324,14 +273,6 @@ async def setup_db():
             )
         ''')
 
-        await conn.execute('''
-            CREATE TABLE IF NOT EXISTS level_coin_rewards (
-                level_type VARCHAR(10),
-                level INTEGER,
-                coins INTEGER,
-                PRIMARY KEY (level_type, level)
-            )
-        ''')
 
 async def get_user(user_id: int):
     p = await get_pool()
@@ -374,6 +315,15 @@ async def remove_balance(user_id: int, amount: int, force: bool = False) -> bool
         await conn.execute('UPDATE users SET balance = balance - $1 WHERE user_id = $2', amount, user_id)
     return True
 
+async def set_initial_issued(user_id: int):
+    await get_user(user_id)
+    p = await get_pool()
+    async with p.acquire() as conn:
+        await conn.execute('UPDATE users SET initial_issued = TRUE WHERE user_id = $1', user_id)
+
+async def check_initial_issued(user_id: int) -> bool:
+    user = await get_user(user_id)
+    return user["initial_issued"]
 
 
 async def reset_gambling_count(user_id: int, date_str: str):
@@ -412,20 +362,19 @@ async def add_xp(user_id: int, amount: int, mode: str):
         await conn.execute(f'UPDATE users SET {field_xp} = $1, {field_lv} = $2 WHERE user_id = $3', new_xp, new_lv, user_id)
         return new_lv if leveled_up else None
 
-async def add_room(channel_id: int, owner_id: int, room_type: str, expire_at: datetime.datetime, trigger_channel_id: int = None):
+async def add_room(channel_id: int, owner_id: int, room_type: str, expire_at: datetime.datetime):
     p = await get_pool()
     async with p.acquire() as conn:
-        await conn.execute('INSERT INTO rooms (channel_id, owner_id, room_type, expire_at, trigger_channel_id) VALUES ($1, $2, $3, $4, $5)', 
-                         channel_id, owner_id, room_type, expire_at, trigger_channel_id)
+        await conn.execute('INSERT INTO rooms (channel_id, owner_id, room_type, expire_at) VALUES ($1, $2, $3, $4)', 
+                         channel_id, owner_id, room_type, expire_at)
 
 async def get_room(channel_id: int):
     p = await get_pool()
     async with p.acquire() as conn:
-        row = await conn.fetchrow('SELECT owner_id, room_type, expire_at, trigger_channel_id FROM rooms WHERE channel_id = $1', channel_id)
+        row = await conn.fetchrow('SELECT owner_id, room_type, expire_at FROM rooms WHERE channel_id = $1', channel_id)
         if row:
-            return {"owner_id": row['owner_id'], "room_type": row['room_type'], "expire_at": row['expire_at'], "trigger_channel_id": row['trigger_channel_id']}
+            return {"owner_id": row['owner_id'], "room_type": row['room_type'], "expire_at": row['expire_at']}
         return None
-
 
 async def has_room_type(owner_id: int, room_types: list[str]) -> bool:
     p = await get_pool()
@@ -452,12 +401,20 @@ async def get_expired_rooms():
         return [row['channel_id'] for row in rows]
 
 # --- 管理用リセット関数 ---
+async def get_top_users(mode: str, limit: int = 10) -> list[dict]:
+    pool = await get_pool()
+    order_field = "tc_xp" if mode == "tc" else "vc_xp"
+    level_field = "tc_level" if mode == "tc" else "vc_level"
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(f'SELECT user_id, {order_field} as xp, {level_field} as level FROM users ORDER BY {level_field} DESC, {order_field} DESC LIMIT $1', limit)
+        return [{"user_id": r["user_id"], "xp": r["xp"], "level": r["level"]} for r in rows]
+
 async def reset_user_rank(user_id: int):
     p = await get_pool()
     async with p.acquire() as conn:
         await conn.execute('''
             UPDATE users 
-            SET tc_xp = 0, tc_level = 1, vc_xp = 0, vc_level = 1 
+            SET tc_xp = 0, tc_level = 1, vc_xp = 0, vc_level = 1, evaluation_vc_time = 0 
             WHERE user_id = $1
         ''', user_id)
 
@@ -522,51 +479,6 @@ async def get_auto_vc_triggers() -> list[int]:
     async with p.acquire() as conn:
         rows = await conn.fetch('SELECT channel_id FROM auto_vc_triggers')
         return [row['channel_id'] for row in rows]
-
-# --- VC作成トリガー設定管理用関数 ---
-async def save_auto_vc_config(channel_id: int, base_name: str, allow_rename: bool, include_owner_name: bool, use_numbering: bool, allow_limit_change: bool, show_panel: bool):
-    p = await get_pool()
-    async with p.acquire() as conn:
-        await conn.execute('''
-            INSERT INTO auto_vc_config (channel_id, base_name, allow_rename, include_owner_name, use_numbering, allow_limit_change, show_panel)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ON CONFLICT (channel_id) DO UPDATE SET
-                base_name = $2, allow_rename = $3, include_owner_name = $4, use_numbering = $5, allow_limit_change = $6, show_panel = $7
-        ''', channel_id, base_name, allow_rename, include_owner_name, use_numbering, allow_limit_change, show_panel)
-
-async def get_auto_vc_config(channel_id: int) -> dict | None:
-    p = await get_pool()
-    async with p.acquire() as conn:
-        row = await conn.fetchrow('SELECT base_name, allow_rename, include_owner_name, use_numbering, allow_limit_change, show_panel FROM auto_vc_config WHERE channel_id = $1', channel_id)
-        if row:
-            return {
-                "base_name": row["base_name"],
-                "allow_rename": row["allow_rename"],
-                "include_owner_name": row["include_owner_name"],
-                "use_numbering": row["use_numbering"],
-                "allow_limit_change": row["allow_limit_change"],
-                "show_panel": row["show_panel"]
-            }
-        return None
-
-async def remove_auto_vc_config(channel_id: int):
-    p = await get_pool()
-    async with p.acquire() as conn:
-        await conn.execute('DELETE FROM auto_vc_config WHERE channel_id = $1', channel_id)
-
-async def get_all_auto_vc_configs() -> list[dict]:
-    p = await get_pool()
-    async with p.acquire() as conn:
-        rows = await conn.fetch('SELECT channel_id, base_name, allow_rename, include_owner_name, use_numbering, allow_limit_change, show_panel FROM auto_vc_config')
-        return [{
-            "channel_id": r["channel_id"],
-            "base_name": r["base_name"],
-            "allow_rename": r["allow_rename"],
-            "include_owner_name": r["include_owner_name"],
-            "use_numbering": r["use_numbering"],
-            "allow_limit_change": r["allow_limit_change"],
-            "show_panel": r["show_panel"]
-        } for r in rows]
 
 # --- お問い合わせパネル管理用関数 ---
 async def add_inquiry_panel(channel_id: int, mention_role_ids: list[int]):
@@ -672,30 +584,6 @@ async def update_room_price(room_type: str, duration: int, price: int):
             DO UPDATE SET price = EXCLUDED.price
         ''', room_type, duration, price)
 
-async def get_all_role_room_prices() -> list[dict]:
-    p = await get_pool()
-    async with p.acquire() as conn:
-        rows = await conn.fetch('SELECT role_key, room_type, duration, price FROM role_room_prices ORDER BY role_key ASC, room_type ASC, duration ASC')
-        return [{"role_key": r["role_key"], "room_type": r["room_type"], "duration": r["duration"], "price": r["price"]} for r in rows]
-
-async def save_role_room_price(role_key: str, room_type: str, duration: int, price: int):
-    p = await get_pool()
-    async with p.acquire() as conn:
-        await conn.execute('''
-            INSERT INTO role_room_prices (role_key, room_type, duration, price)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (role_key, room_type, duration)
-            DO UPDATE SET price = EXCLUDED.price
-        ''', role_key, room_type, duration, price)
-
-async def delete_role_room_price(role_key: str, room_type: str, duration: int):
-    p = await get_pool()
-    async with p.acquire() as conn:
-        await conn.execute('''
-            DELETE FROM role_room_prices
-            WHERE role_key = $1 AND room_type = $2 AND duration = $3
-        ''', role_key, room_type, duration)
-
 # --- 匿名チャット管理用関数 ---
 async def add_anonymous_chat(panel_channel_id: int, dest_channel_id: int):
     p = await get_pool()
@@ -789,9 +677,6 @@ async def set_log_channel(guild_id: int, log_type: str, channel_id: int):
             DO UPDATE SET channel_id = $3
         ''', guild_id, log_type, channel_id)
 
-async def save_log_channel(guild_id: int, log_type: str, channel_id: int):
-    await set_log_channel(guild_id, log_type, channel_id)
-
 async def get_log_channel(guild_id: int, log_type: str) -> int:
     p = await get_pool()
     async with p.acquire() as conn:
@@ -848,12 +733,12 @@ async def get_rank_settings(guild_id: int) -> dict:
             return {
                 "whitelist": row["whitelist_channel_ids"] or [],
                 "blacklist": row["blacklist_channel_ids"] or [],
-                "categories": row["whitelist_category_ids"] or [],
+                "whitelist_categories": row["whitelist_category_ids"] or [],
                 "blacklist_categories": row["blacklist_category_ids"] or []
             }
         else:
             await conn.execute('INSERT INTO rank_settings (guild_id, whitelist_channel_ids, blacklist_channel_ids, whitelist_category_ids, blacklist_category_ids) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (guild_id) DO NOTHING', guild_id, [], [], [], [])
-            return {"whitelist": [], "blacklist": [], "categories": [], "blacklist_categories": []}
+            return {"whitelist": [], "blacklist": [], "whitelist_categories": [], "blacklist_categories": []}
 
 async def get_all_rank_settings() -> list[dict]:
     p = await get_pool()
@@ -864,13 +749,13 @@ async def get_all_rank_settings() -> list[dict]:
                 "guild_id": r["guild_id"],
                 "whitelist": r["whitelist_channel_ids"] or [],
                 "blacklist": r["blacklist_channel_ids"] or [],
-                "categories": r["whitelist_category_ids"] or [],
+                "whitelist_categories": r["whitelist_category_ids"] or [],
                 "blacklist_categories": r["blacklist_category_ids"] or []
             }
             for r in rows
         ]
 
-async def set_rank_settings(guild_id: int, whitelist_ids: list[int], blacklist_ids: list[int], category_ids: list[int], blacklist_category_ids: list[int]):
+async def set_rank_settings(guild_id: int, whitelist_ids: list[int], blacklist_ids: list[int], whitelist_cat_ids: list[int], blacklist_cat_ids: list[int]):
     p = await get_pool()
     async with p.acquire() as conn:
         await conn.execute('''
@@ -878,72 +763,47 @@ async def set_rank_settings(guild_id: int, whitelist_ids: list[int], blacklist_i
             VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (guild_id)
             DO UPDATE SET whitelist_channel_ids = $2, blacklist_channel_ids = $3, whitelist_category_ids = $4, blacklist_category_ids = $5
-        ''', guild_id, whitelist_ids, blacklist_ids, category_ids, blacklist_category_ids)
+        ''', guild_id, whitelist_ids, blacklist_ids, whitelist_cat_ids, blacklist_cat_ids)
 
-
-# --- VCコイン対象設定管理用関数 ---
-async def get_vc_coins_settings(guild_id: int) -> dict:
+async def add_evaluation_vc_time(user_id: int, seconds: int):
+    await get_user(user_id)
     p = await get_pool()
     async with p.acquire() as conn:
-        row = await conn.fetchrow('SELECT whitelist_channel_ids, blacklist_channel_ids, whitelist_category_ids, blacklist_category_ids FROM vc_coins_settings WHERE guild_id = $1', guild_id)
-        if row:
-            return {
-                "whitelist": row["whitelist_channel_ids"] or [],
-                "blacklist": row["blacklist_channel_ids"] or [],
-                "categories": row["whitelist_category_ids"] or [],
-                "blacklist_categories": row["blacklist_category_ids"] or []
-            }
-        else:
-            await conn.execute('INSERT INTO vc_coins_settings (guild_id, whitelist_channel_ids, blacklist_channel_ids, whitelist_category_ids, blacklist_category_ids) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (guild_id) DO NOTHING', guild_id, [], [], [], [])
-            return {"whitelist": [], "blacklist": [], "categories": [], "blacklist_categories": []}
+        await conn.execute('UPDATE users SET evaluation_vc_time = evaluation_vc_time + $1 WHERE user_id = $2', seconds, user_id)
 
-async def get_all_vc_coins_settings() -> list[dict]:
-    p = await get_pool()
-    async with p.acquire() as conn:
-        rows = await conn.fetch('SELECT guild_id, whitelist_channel_ids, blacklist_channel_ids, whitelist_category_ids, blacklist_category_ids FROM vc_coins_settings')
-        return [
-            {
-                "guild_id": r["guild_id"],
-                "whitelist": r["whitelist_channel_ids"] or [],
-                "blacklist": r["blacklist_channel_ids"] or [],
-                "categories": r["whitelist_category_ids"] or [],
-                "blacklist_categories": r["blacklist_category_ids"] or []
-            }
-            for r in rows
-        ]
-
-async def set_vc_coins_settings(guild_id: int, whitelist_ids: list[int], blacklist_ids: list[int], category_ids: list[int], blacklist_category_ids: list[int]):
+# --- ユーザー評価結果管理用関数 ---
+async def add_user_evaluation(target_user_id: int, evaluator_id: int, result: str):
     p = await get_pool()
     async with p.acquire() as conn:
         await conn.execute('''
-            INSERT INTO vc_coins_settings (guild_id, whitelist_channel_ids, blacklist_channel_ids, whitelist_category_ids, blacklist_category_ids)
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (guild_id)
-            DO UPDATE SET whitelist_channel_ids = $2, blacklist_channel_ids = $3, whitelist_category_ids = $4, blacklist_category_ids = $5
-        ''', guild_id, whitelist_ids, blacklist_ids, category_ids, blacklist_category_ids)
+            INSERT INTO user_evaluations (target_user_id, evaluator_id, result, created_at)
+            VALUES ($1, $2, $3, $4)
+        ''', target_user_id, evaluator_id, result, get_now_naive())
 
+async def get_user_evaluation_counts(target_user_id: int) -> dict:
+    p = await get_pool()
+    async with p.acquire() as conn:
+        rows = await conn.fetch('''
+            SELECT result, COUNT(*) as count
+            FROM user_evaluations
+            WHERE target_user_id = $1
+            GROUP BY result
+        ''', target_user_id)
+        return {r['result']: r['count'] for r in rows}
 
-# --- VC滞在時間管理用関数 ---
-async def add_vc_duration(user_id: int, category_id: int, seconds: int):
+async def add_reaction_role(message_id: int, emoji: str, role_id: int):
     p = await get_pool()
     async with p.acquire() as conn:
         await conn.execute('''
-            INSERT INTO user_vc_durations (user_id, category_id, duration_seconds)
+            INSERT INTO reaction_roles (message_id, emoji, role_id)
             VALUES ($1, $2, $3)
-            ON CONFLICT (user_id, category_id)
-            DO UPDATE SET duration_seconds = user_vc_durations.duration_seconds + $3
-        ''', user_id, category_id, seconds)
+            ON CONFLICT (message_id, emoji) DO UPDATE SET role_id = EXCLUDED.role_id
+        ''', message_id, emoji, role_id)
 
-async def get_vc_duration_for_categories(user_id: int, category_ids: list[int]) -> int:
-    if not category_ids:
-        return 0
+async def remove_reaction_role(message_id: int, emoji: str):
     p = await get_pool()
     async with p.acquire() as conn:
-        row = await conn.fetchrow('''
-            SELECT SUM(duration_seconds) FROM user_vc_durations
-            WHERE user_id = $1 AND category_id = ANY($2)
-        ''', user_id, category_ids)
-        return row[0] if row and row[0] is not None else 0
+        await conn.execute('DELETE FROM reaction_roles WHERE message_id = $1 AND emoji = $2', message_id, emoji)
 
 # --- 常設テンプレート(Sticky Template)管理用関数 ---
 async def get_sticky_template(channel_id: int) -> dict:
@@ -959,7 +819,7 @@ async def get_sticky_template(channel_id: int) -> dict:
             }
         return None
 
-async def save_sticky_template(channel_id: int, content: str, title: str = None):
+async def set_sticky_template(channel_id: int, title: str, content: str):
     p = await get_pool()
     async with p.acquire() as conn:
         await conn.execute('''
@@ -976,17 +836,11 @@ async def update_sticky_last_message(channel_id: int, message_id: int, text_mess
             UPDATE sticky_templates SET last_message_id = $2, last_text_message_id = $3 WHERE channel_id = $1
         ''', channel_id, message_id, text_message_id)
 
-async def remove_sticky_template(channel_id: int):
+async def delete_sticky_template(channel_id: int):
     p = await get_pool()
     async with p.acquire() as conn:
         await conn.execute('DELETE FROM sticky_templates WHERE channel_id = $1', channel_id)
 
-
-
-
-async def check_initial_issued(user_id: int) -> bool:
-    user = await get_user(user_id)
-    return user["initial_issued"]
 
 async def get_reaction_role(message_id: int, emoji: str):
     p = await get_pool()
@@ -994,98 +848,6 @@ async def get_reaction_role(message_id: int, emoji: str):
         row = await conn.fetchrow('SELECT role_id FROM reaction_roles WHERE message_id = $1 AND emoji = $2', message_id, emoji)
         return row['role_id'] if row else None
 
-async def add_evaluation_vc_time(user_id: int, seconds: int):
-    await get_user(user_id)
-    p = await get_pool()
-    async with p.acquire() as conn:
-        await conn.execute('UPDATE users SET evaluation_vc_time = evaluation_vc_time + $1 WHERE user_id = $2', seconds, user_id)
-
-async def remove_reaction_role(message_id: int, emoji: str):
-    p = await get_pool()
-    async with p.acquire() as conn:
-        await conn.execute('DELETE FROM reaction_roles WHERE message_id = $1 AND emoji = $2', message_id, emoji)
-
-
-
-
-
-async def add_reaction_role(message_id: int, emoji: str, role_id: int):
-    p = await get_pool()
-    async with p.acquire() as conn:
-        await conn.execute('''
-            INSERT INTO reaction_roles (message_id, emoji, role_id)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (message_id, emoji) DO UPDATE SET role_id = EXCLUDED.role_id
-        ''', message_id, emoji, role_id)
-
-
-        await conn.execute('''
-            CREATE TABLE IF NOT EXISTS shop_settings (
-                guild_id BIGINT PRIMARY KEY,
-                employee_role_id BIGINT,
-                manager_role_id BIGINT
-            )
-        ''')
-
-        await conn.execute('''
-            CREATE TABLE IF NOT EXISTS shop_items (
-                item_id SERIAL PRIMARY KEY,
-                guild_id BIGINT,
-                name TEXT,
-                usage TEXT,
-                price INTEGER DEFAULT 0,
-                target_role_id BIGINT,
-                reward_role_id BIGINT
-            )
-        ''')
-        
-        try:
-            await conn.execute('ALTER TABLE shop_items ADD COLUMN IF NOT EXISTS target_role_id BIGINT')
-            await conn.execute('ALTER TABLE shop_items ADD COLUMN IF NOT EXISTS reward_role_id BIGINT')
-            await conn.execute('ALTER TABLE shop_items ADD COLUMN IF NOT EXISTS target_role_ids BIGINT[] DEFAULT \'{}\'')
-            await conn.execute('ALTER TABLE shop_items ADD COLUMN IF NOT EXISTS reward_role_ids BIGINT[] DEFAULT \'{}\'')
-            # Migrate existing data
-            await conn.execute("UPDATE shop_items SET target_role_ids = ARRAY[target_role_id] WHERE target_role_id IS NOT NULL AND (target_role_ids IS NULL OR target_role_ids = '{}')")
-            await conn.execute("UPDATE shop_items SET reward_role_ids = ARRAY[reward_role_id] WHERE reward_role_id IS NOT NULL AND (reward_role_ids IS NULL OR reward_role_ids = '{}')")
-        except Exception as e:
-            print(f"[Migration] shop_items duplicate migration warning: {e}")
-
-        await conn.execute('''
-            CREATE TABLE IF NOT EXISTS user_items (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT,
-                item_id INTEGER,
-                purchased_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-
-async def get_user_evaluation_counts(target_user_id: int) -> dict:
-    p = await get_pool()
-    async with p.acquire() as conn:
-        rows = await conn.fetch('''
-            SELECT result, COUNT(*) as count
-            FROM user_evaluations
-            WHERE target_user_id = $1
-            GROUP BY result
-        ''', target_user_id)
-        return {r['result']: r['count'] for r in rows}
-
-async def add_user_evaluation(target_user_id: int, evaluator_id: int, result: str):
-    p = await get_pool()
-    async with p.acquire() as conn:
-        await conn.execute('''
-            INSERT INTO user_evaluations (target_user_id, evaluator_id, result, created_at)
-            VALUES ($1, $2, $3, $4)
-        ''', target_user_id, evaluator_id, result, get_now_naive())
-
-async def set_initial_issued(user_id: int):
-    await get_user(user_id)
-    p = await get_pool()
-    async with p.acquire() as conn:
-        await conn.execute('UPDATE users SET initial_issued = TRUE WHERE user_id = $1', user_id)
-
-async def mark_initial_issued(user_id: int):
-    await set_initial_issued(user_id)
 
 async def add_interviewer_log(interviewer_id: int, target_user_id: int, guild_id: int):
     p = await get_pool()
@@ -1174,97 +936,7 @@ async def clear_antigrief_settings_field(guild_id: int, field_name: str):
 
     await set_antigrief_settings(guild_id, cfg["categories"], cfg["channels"], cfg["exempt_roles"])
 
-# --- 不具合修正：ランク対象設定の更新用関数 ---
-async def update_rank_settings_list(guild_id: int, field_type: str, item_id: int, action: str):
-    p = await get_pool()
-    async with p.acquire() as conn:
-        row = await conn.fetchrow('SELECT whitelist_channel_ids, blacklist_channel_ids, whitelist_category_ids, blacklist_category_ids FROM rank_settings WHERE guild_id = $1', guild_id)
-        if not row:
-            await conn.execute('INSERT INTO rank_settings (guild_id, whitelist_channel_ids, blacklist_channel_ids, whitelist_category_ids, blacklist_category_ids) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (guild_id) DO NOTHING', guild_id, [], [], [], [])
-            wl_ch, bl_ch, wl_cat, bl_cat = [], [], [], []
-        else:
-            wl_ch = row["whitelist_channel_ids"] or []
-            bl_ch = row["blacklist_channel_ids"] or []
-            wl_cat = row["whitelist_category_ids"] or []
-            bl_cat = row["blacklist_category_ids"] or []
-
-        if field_type == "whitelist_channels":
-            target_list = wl_ch
-        elif field_type == "blacklist_channels":
-            target_list = bl_ch
-        elif field_type == "whitelist_categories":
-            target_list = wl_cat
-        elif field_type == "blacklist_categories":
-            target_list = bl_cat
-        else:
-            return
-
-        if action == "add":
-            if item_id not in target_list:
-                target_list.append(item_id)
-        elif action == "remove":
-            if item_id in target_list:
-                target_list.remove(item_id)
-
-        await conn.execute('''
-            UPDATE rank_settings
-            SET whitelist_channel_ids = $2, blacklist_channel_ids = $3, whitelist_category_ids = $4, blacklist_category_ids = $5
-            WHERE guild_id = $1
-        ''', guild_id, wl_ch, bl_ch, wl_cat, bl_cat)
-
-async def clear_rank_settings_field(guild_id: int, field_name: str):
-    p = await get_pool()
-    async with p.acquire() as conn:
-        if field_name in ["whitelist_channel_ids", "blacklist_channel_ids", "whitelist_category_ids", "blacklist_category_ids"]:
-            await conn.execute(f'UPDATE rank_settings SET {field_name} = $2 WHERE guild_id = $1', guild_id, [])
-
-
-async def update_vc_coins_settings_list(guild_id: int, field_type: str, item_id: int, action: str):
-    p = await get_pool()
-    async with p.acquire() as conn:
-        row = await conn.fetchrow('SELECT whitelist_channel_ids, blacklist_channel_ids, whitelist_category_ids, blacklist_category_ids FROM vc_coins_settings WHERE guild_id = $1', guild_id)
-        if not row:
-            await conn.execute('INSERT INTO vc_coins_settings (guild_id, whitelist_channel_ids, blacklist_channel_ids, whitelist_category_ids, blacklist_category_ids) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (guild_id) DO NOTHING', guild_id, [], [], [], [])
-            wl_ch, bl_ch, wl_cat, bl_cat = [], [], [], []
-        else:
-            wl_ch = row["whitelist_channel_ids"] or []
-            bl_ch = row["blacklist_channel_ids"] or []
-            wl_cat = row["whitelist_category_ids"] or []
-            bl_cat = row["blacklist_category_ids"] or []
-
-        if field_type == "whitelist_channels":
-            target_list = wl_ch
-        elif field_type == "blacklist_channels":
-            target_list = bl_ch
-        elif field_type == "whitelist_categories":
-            target_list = wl_cat
-        elif field_type == "blacklist_categories":
-            target_list = bl_cat
-        else:
-            return
-
-        if action == "add":
-            if item_id not in target_list:
-                target_list.append(item_id)
-        elif action == "remove":
-            if item_id in target_list:
-                target_list.remove(item_id)
-
-        await conn.execute('''
-            UPDATE vc_coins_settings
-            SET whitelist_channel_ids = $2, blacklist_channel_ids = $3, whitelist_category_ids = $4, blacklist_category_ids = $5
-            WHERE guild_id = $1
-        ''', guild_id, wl_ch, bl_ch, wl_cat, bl_cat)
-
-async def clear_vc_coins_settings_field(guild_id: int, field_name: str):
-    p = await get_pool()
-    async with p.acquire() as conn:
-        if field_name in ["whitelist_channel_ids", "blacklist_channel_ids", "whitelist_category_ids", "blacklist_category_ids"]:
-            await conn.execute(f'UPDATE vc_coins_settings SET {field_name} = $2 WHERE guild_id = $1', guild_id, [])
-
-
-
-# ショップ設定
+# ショップ設定関連
 async def get_shop_settings(guild_id: int):
     p = await get_pool()
     async with p.acquire() as conn:
@@ -1341,62 +1013,23 @@ async def delete_shop_item(item_id: int):
     async with p.acquire() as conn:
         await conn.execute('DELETE FROM shop_items WHERE item_id = $1', item_id)
 
+# ユーザー購入履歴関連
 async def add_user_item(user_id: int, item_id: int):
     p = await get_pool()
     async with p.acquire() as conn:
-        await conn.execute('INSERT INTO user_items (user_id, item_id) VALUES ($1, $2)', user_id, item_id)
+        await conn.execute('''
+            INSERT INTO user_items (user_id, item_id, purchased_at)
+            VALUES ($1, $2, CURRENT_TIMESTAMP)
+        ''', user_id, item_id)
 
 async def get_user_items(user_id: int):
     p = await get_pool()
     async with p.acquire() as conn:
-        rows = await conn.fetch('SELECT * FROM user_items WHERE user_id = $1', user_id)
-        return [dict(r) for r in rows]
-
-# --- レベルコイン報酬管理用関数 ---
-async def add_level_coin_reward(level_type: str, level: int, coins: int):
-    p = await get_pool()
-    async with p.acquire() as conn:
-        await conn.execute('''
-            INSERT INTO level_coin_rewards (level_type, level, coins)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (level_type, level)
-            DO UPDATE SET coins = EXCLUDED.coins
-        ''', level_type, level, coins)
-
-async def get_level_coin_rewards(level_type: str = None) -> list[dict]:
-    p = await get_pool()
-    async with p.acquire() as conn:
-        if level_type:
-            rows = await conn.fetch('''
-                SELECT level_type, level, coins 
-                FROM level_coin_rewards 
-                WHERE level_type = $1 
-                ORDER BY level ASC
-            ''', level_type)
-        else:
-            rows = await conn.fetch('''
-                SELECT level_type, level, coins 
-                FROM level_coin_rewards 
-                ORDER BY level_type ASC, level ASC
-            ''')
-        return [{"level_type": r["level_type"], "level": r["level"], "coins": r["coins"]} for r in rows]
-
-async def remove_level_coin_reward(level_type: str, level: int):
-    p = await get_pool()
-    async with p.acquire() as conn:
-        await conn.execute('''
-            DELETE FROM level_coin_rewards 
-            WHERE level_type = $1 AND level = $2
-        ''', level_type, level)
-
-# --- VCランキング取得用関数 ---
-async def get_vc_ranking(limit: int = 10) -> list[dict]:
-    p = await get_pool()
-    async with p.acquire() as conn:
         rows = await conn.fetch('''
-            SELECT user_id, vc_level, vc_xp 
-            FROM users 
-            ORDER BY vc_level DESC, vc_xp DESC 
-            LIMIT $1
-        ''', limit)
-        return [{"user_id": r["user_id"], "vc_level": r["vc_level"], "vc_xp": r["vc_xp"]} for r in rows]
+            SELECT u.id, u.item_id, s.name, u.purchased_at
+            FROM user_items u
+            JOIN shop_items s ON u.item_id = s.item_id
+            WHERE u.user_id = $1
+            ORDER BY u.purchased_at DESC
+        ''', user_id)
+        return [dict(r) for r in rows]
