@@ -31,6 +31,7 @@ async def setup_db():
                 last_daily TIMESTAMP,
                 chinchiro_count INTEGER DEFAULT 0,
                 chinchiro_last_date TEXT,
+                chinchiro_daily_bet INTEGER DEFAULT 0,
                 tc_xp INTEGER DEFAULT 0,
                 tc_level INTEGER DEFAULT 1,
                 vc_xp INTEGER DEFAULT 0,
@@ -88,6 +89,11 @@ async def setup_db():
             await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS initial_issued BOOLEAN DEFAULT FALSE')
         except Exception as e:
             print(f"[Migration] users initial_issued migration warning: {e}")
+
+        try:
+            await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS chinchiro_daily_bet INTEGER DEFAULT 0')
+        except Exception as e:
+            print(f"[Migration] users daily bet migration warning: {e}")
 
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS level_role_rewards (
@@ -277,7 +283,7 @@ async def setup_db():
 async def get_user(user_id: int):
     p = await get_pool()
     async with p.acquire() as conn:
-        row = await conn.fetchrow('SELECT balance, chinchiro_count, chinchiro_last_date, tc_xp, tc_level, vc_xp, vc_level, evaluation_vc_time, initial_issued FROM users WHERE user_id = $1', user_id)
+        row = await conn.fetchrow('SELECT balance, chinchiro_count, chinchiro_last_date, tc_xp, tc_level, vc_xp, vc_level, evaluation_vc_time, initial_issued, chinchiro_daily_bet FROM users WHERE user_id = $1', user_id)
         if row:
             return {
                 "balance": row['balance'], 
@@ -288,11 +294,12 @@ async def get_user(user_id: int):
                 "vc_xp": row['vc_xp'],
                 "vc_level": row['vc_level'],
                 "evaluation_vc_time": row['evaluation_vc_time'],
-                "initial_issued": row['initial_issued']
+                "initial_issued": row['initial_issued'],
+                "chinchiro_daily_bet": row['chinchiro_daily_bet'] if 'chinchiro_daily_bet' in row.keys() else 0
             }
         else:
             await conn.execute('INSERT INTO users (user_id, balance, initial_issued) VALUES ($1, 0, FALSE) ON CONFLICT (user_id) DO NOTHING', user_id)
-            return {"balance": 0, "chinchiro_count": 0, "chinchiro_last_date": None, "tc_xp": 0, "tc_level": 1, "vc_xp": 0, "vc_level": 1, "evaluation_vc_time": 0, "initial_issued": False}
+            return {"balance": 0, "chinchiro_count": 0, "chinchiro_last_date": None, "tc_xp": 0, "tc_level": 1, "vc_xp": 0, "vc_level": 1, "evaluation_vc_time": 0, "initial_issued": False, "chinchiro_daily_bet": 0}
 
 async def get_balance(user_id: int) -> int:
     user = await get_user(user_id)
@@ -329,12 +336,12 @@ async def check_initial_issued(user_id: int) -> bool:
 async def reset_gambling_count(user_id: int, date_str: str):
     p = await get_pool()
     async with p.acquire() as conn:
-        await conn.execute('UPDATE users SET chinchiro_count = 0, chinchiro_last_date = $1 WHERE user_id = $2', date_str, user_id)
+        await conn.execute('UPDATE users SET chinchiro_count = 0, chinchiro_daily_bet = 0, chinchiro_last_date = $1 WHERE user_id = $2', date_str, user_id)
 
-async def increment_gambling_count(user_id: int):
+async def increment_gambling_count(user_id: int, amount: int = 0):
     p = await get_pool()
     async with p.acquire() as conn:
-        await conn.execute('UPDATE users SET chinchiro_count = chinchiro_count + 1 WHERE user_id = $1', user_id)
+        await conn.execute('UPDATE users SET chinchiro_count = chinchiro_count + 1, chinchiro_daily_bet = chinchiro_daily_bet + $1 WHERE user_id = $2', amount, user_id)
 
 def get_next_level_xp(level: int) -> int:
     return int(100 * (level ** 1.2) + 100)
