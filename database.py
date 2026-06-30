@@ -606,6 +606,12 @@ async def remove_anonymous_chat(channel_id: int):
     async with p.acquire() as conn:
         await conn.execute('DELETE FROM anonymous_chats WHERE panel_channel_id = $1 OR dest_channel_id = $1', channel_id)
 
+async def get_panel_channel_by_dest(dest_channel_id: int) -> list[int]:
+    p = await get_pool()
+    async with p.acquire() as conn:
+        rows = await conn.fetch('SELECT panel_channel_id FROM anonymous_chats WHERE dest_channel_id = $1', dest_channel_id)
+        return [r['panel_channel_id'] for r in rows]
+
 # --- カスタムチケットパネル管理用関数 ---
 async def add_custom_ticket_panel(
     channel_id: int,
