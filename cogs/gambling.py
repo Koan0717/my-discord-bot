@@ -1075,7 +1075,8 @@ class GambleSettingsBackButton(discord.ui.Button):
         view = self.view
         if interaction.user != view.user:
             return await interaction.response.send_message("操作権限がありません。", ephemeral=True)
+        await interaction.response.defer()
         from cogs.admin import BotSetupMainView
         back_view = BotSetupMainView(interaction.user, interaction.client)
         embed = await back_view.build_embed(interaction.guild)
-        await interaction.response.edit_message(embed=embed, view=back_view)
+        await interaction.edit_original_response(embed=embed, view=back_view)
