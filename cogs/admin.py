@@ -180,15 +180,20 @@ class AdminCog(commands.Cog):
                 await trigger_evaluation_failure(it.guild, t, "通貨マイナスになったため", it.user, self.bot)
 
     @AdminGroup.command(name="手動没収", description="【運営専用】指定したユーザーから通貨を直接没収します")
+    @app_commands.describe(target="没収するユーザー", amount="金額")
     @is_admin()
-    async def remove(self, it, target: discord.Member, amount: int):
-        new_bal = await database.get_balance(target.id) - amount
+    async def remove(self, it: discord.Interaction, target: discord.Member, amount: int):
+        if amount <= 0:
+            await it.response.send_message("❌ 1以上の金額を指定してください。", ephemeral=True)
+            return
+        await it.response.defer()
         await database.remove_balance(target.id, amount, force=True)
-        await it.response.send_message(f"✅ {target.mention} から {amount} {config.CURRENCY_NAME} 没収しました。", ephemeral=True)
+        new_bal = await database.get_balance(target.id)
+        await it.followup.send(f"✅ {target.mention} から {amount} {config.CURRENCY_NAME} 没収しました。（現在の残高: **{new_bal} {config.CURRENCY_NAME}**）")
         await config.send_economy_log(
             it.guild,
             "📉 通貨没収 (手動没収)",
-            f"管理者の {it.user.mention} が {target.mention} から **{amount} {config.CURRENCY_NAME}** を没収しました。",
+            f"管理者の {it.user.mention} が {target.mention} から **{amount} {config.CURRENCY_NAME}** を没収しました。（新残高: {new_bal:,} {config.CURRENCY_NAME}）",
             user=it.user,
             color=discord.Color.red()
         )
