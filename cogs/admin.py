@@ -12,6 +12,7 @@ from cogs.reaction_roles import CustomRolePanelSetupModal
 from cogs.tickets import InquiryRequestPanelView, EmblemRequestPanelView, ConfessionRequestPanelView, CustomTicketSetupModal, InquirySetupView
 from cogs.rooms import MainInnPanelView, TempInnPanelView, LuxuryInnPanelView, CustomRoomView, VCRenamePanelView
 from cogs.gambling import ChinchiroView, CoinflipView, SlotView, BlackjackView, RouletteView
+from cogs.logging_cog import AnonymousChatSetupView
 
 _bot_instance = None
 
@@ -2054,6 +2055,7 @@ class PanelSelect(discord.ui.Select):
             discord.SelectOption(label="VC管理", description="VC名・人数制限変更のパネルを設置します", emoji="⚙️", value="vc_manage"),
             discord.SelectOption(label="入界手続き", description="新規メンバーの入界手続きパネルを設置します", emoji="📝", value="interview"),
             discord.SelectOption(label="お問い合わせ", description="お問い合わせ作成パネルを設置します", emoji="✉️", value="inquiry"),
+            discord.SelectOption(label="匿名チャット", description="匿名チャットのパネルを設置します", emoji="💬", value="anonymous_chat"),
             discord.SelectOption(label="カスタムチケット", description="任意のタイトル・説明文・担当ロールを指定したチケットパネルを設置します", emoji="🎫", value="custom_ticket"),
             discord.SelectOption(label="任意ロール", description="任意のロールをリアクションで付与するパネルを設置します", emoji="🎭", value="custom_role_panel"),
             discord.SelectOption(label="VC作成トリガー設定", description="VC作成トリガーの管理パネルを設置します", emoji="🎙️", value="vc_trigger"),
@@ -2199,6 +2201,9 @@ class PanelSelect(discord.ui.Select):
             )
             await channel.send(embed=embed, view=VCTriggerPanelView())
             await interaction.response.send_message("✅ VC作成トリガー設定パネルを設置しました。", ephemeral=True)
+        elif val == "anonymous_chat":
+            view = AnonymousChatSetupView()
+            await interaction.response.send_message("匿名チャットパネルの設定を行います。設置先と送信先のチャンネルをそれぞれ選択してください。", view=view, ephemeral=True)
         elif val == "shop":
             from cogs.shop import ShopPanelView
             embed = discord.Embed(

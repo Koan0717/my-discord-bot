@@ -15,6 +15,31 @@ class Logging(commands.Cog):
     async def on_message(self, message):
         if message.author.bot:
             return
+
+        # 匿名チャットの転送処理（受信場所 -> 設置場所）
+        if message.guild:
+            panel_channel_ids = await database.get_panel_channel_by_dest(message.channel.id)
+            if panel_channel_ids:
+                for panel_id in panel_channel_ids:
+                    panel_channel = self.bot.get_channel(panel_id) or await self.bot.fetch_channel(panel_id)
+                    if panel_channel:
+                        embed = discord.Embed(
+                            description=message.content,
+                            color=discord.Color.green(),
+                            timestamp=message.created_at
+                        )
+                        embed.set_author(name="運営メンバー")
+                        
+                        files = []
+                        if message.attachments:
+                            for att in message.attachments:
+                                try:
+                                    file = await att.to_file()
+                                    files.append(file)
+                                except:
+                                    pass
+                                    
+                        await panel_channel.send(embed=embed, files=files)
         
         # 1. 常設テンプレート (Sticky Template) 処理
         if message.guild:
