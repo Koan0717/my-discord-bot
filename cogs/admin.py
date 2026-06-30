@@ -17,6 +17,15 @@ from cogs.logging_cog import AnonymousChatSetupView
 _bot_instance = None
 
 async def trigger_evaluation_failure(guild, target, reason, executor, bot):
+    # 通貨マイナス落ち対象ロールを剥奪
+    minus_target_ids = config.get_setting(bot, "MINUS_TARGET_ROLE_IDS") or []
+    roles_to_remove = [r for r in target.roles if r.id in minus_target_ids]
+    if roles_to_remove:
+        try:
+            await target.remove_roles(*roles_to_remove, reason=reason)
+        except Exception as e:
+            print(f"[Evaluation] Failed to remove minus target roles: {e}")
+
     # 評価落ちロールを付与
     role = config.get_role_by_setting(bot, guild, "EVALUATION_FAILED_ROLE_ID", config.EVALUATION_FAILED_ROLE_NAME)
     if role and role not in target.roles:
@@ -178,7 +187,10 @@ class AdminCog(commands.Cog):
                 user=it.user
             )
             if new_bal < 0:
-                await trigger_evaluation_failure(it.guild, t, "通貨マイナスになったため", it.user, self.bot)
+                minus_target_ids = config.get_setting(self.bot, "MINUS_TARGET_ROLE_IDS") or []
+                member_roles = [r.id for r in t.roles]
+                if any(rid in minus_target_ids for rid in member_roles):
+                    await trigger_evaluation_failure(it.guild, t, "通貨マイナスになったため", it.user, self.bot)
 
     @AdminGroup.command(name="手動没収", description="【運営専用】指定したユーザーから通貨を直接没収します")
     @app_commands.describe(target="没収するユーザー", amount="金額")
@@ -199,7 +211,10 @@ class AdminCog(commands.Cog):
             color=discord.Color.red()
         )
         if new_bal < 0:
-            await trigger_evaluation_failure(it.guild, target, "通貨マイナスになったため", it.user, self.bot)
+            minus_target_ids = config.get_setting(self.bot, "MINUS_TARGET_ROLE_IDS") or []
+            member_roles = [r.id for r in target.roles]
+            if any(rid in minus_target_ids for rid in member_roles):
+                await trigger_evaluation_failure(it.guild, target, "通貨マイナスになったため", it.user, self.bot)
 
     @AdminGroup.command(name="所持金リセット", description="【運営専用】指定したユーザーの所持金を初期化します")
     @app_commands.checks.has_permissions(administrator=True)
@@ -2244,6 +2259,7 @@ class BotSetupMainSelect(discord.ui.Select):
             discord.SelectOption(label="👥 告解司祭ロール", value="CONFESSION_PRIEST_ROLE_ID", description="告解を対応する司祭ロール"),
             discord.SelectOption(label="👥 司祭ロール", value="PRIEST_ROLE_ID", description="相談を対応する司祭ロール"),
             discord.SelectOption(label="👥 イベント管理ロール", value="EVENT_MANAGER_ROLE_IDS", description="イベント登録・編集・削除ができるロール"),
+            discord.SelectOption(label="👥 通貨マイナス落ち対象ロール", value="MINUS_TARGET_ROLE_IDS", description="通貨マイナスで評価落ちさせる対象ロールを設定します"),
             discord.SelectOption(label="📺 レベルアップチャンネル", value="LEVEL_UP_CHANNEL_ID", description="レベルアップ通知を送る先"),
             discord.SelectOption(label="📺 VC作成トリガー", value="CREATE_VC_CHANNEL_ID", description="入室すると自動VCを作る部屋"),
             discord.SelectOption(label="📺 評価時間対象カテゴリー", value="EVAL_TIME_CATEGORY_ID", description="評価時間を計測するカテゴリー"),
@@ -2335,6 +2351,7 @@ class BotSetupMainView(discord.ui.View):
             f"・仮(新規)メンバーロール: {format_setting_status(guild, 'NEW_MEMBER_ROLE_ID', bot)}\n"
             f"・入界待機者ロール: {format_setting_status(guild, 'PENDING_MEMBER_ROLE_ID', bot)}\n"
             f"・本/準メンバーロール: {format_setting_status(guild, 'MAIN_SUB_MEMBER_ROLE_IDS', bot)}\n"
+            f"・通貨マイナス落ち対象ロール: {format_setting_status(guild, 'MINUS_TARGET_ROLE_IDS', bot)}\n"
             f"・面接官ロール: {format_setting_status(guild, 'INTERVIEWER_ROLE_IDS', bot)}\n"
         )
         embed.add_field(name="👥 基本・管理権限設定", value=roles_text, inline=False)
