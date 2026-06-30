@@ -35,8 +35,9 @@ async def trigger_evaluation_failure(guild, target, reason, executor, bot):
             print(f"[Evaluation] Failed to add role: {e}")
             
     # 自分にしか見えないチャット (DM)
+    dm_msg = "審査の結果評価落ちになりました。" if reason != "通貨マイナスになったため" else "通貨がマイナスになった為、評価落ちしました。"
     try:
-        await target.send("通貨がマイナスになった為、評価落ちしました。")
+        await target.send(dm_msg)
     except Exception:
         pass
         

@@ -286,7 +286,7 @@ class Logging(commands.Cog):
                     if entry.target.id == after.id:
                         if eval_failed_role in entry.after.roles and eval_failed_role not in entry.before.roles:
                             moderator = entry.user
-                            if entry.reason == "通貨マイナスになったため":
+                            if entry.reason == "通貨マイナスになったため" or (entry.user and entry.user.bot):
                                 is_manual = False
                             break
             except Exception as e:
