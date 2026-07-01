@@ -219,7 +219,7 @@ async def process_room_extension(interaction: discord.Interaction, room_type: st
         await database.extend_room(channel_id, new_expire)
         embed = discord.Embed(
             title="⏱️ 部屋の延長",
-            description=f"**{price} {config.CURRENCY_NAME}** を支払い、部屋の時間を **{duration}時間** 延長しました！\n新しい終了予定時刻: <t:{int(new_expire.timestamp())}:F>",
+            description=f"**{price} {config.CURRENCY_NAME}** を支払い、部屋の時間を **{duration}時間** 延長しました！\n新しい終了予定時刻: <t:{int(new_expire.replace(tzinfo=config.JST).timestamp())}:F>",
             color=discord.Color.green()
         )
         await interaction.edit_original_response(content="✅ 延長手続きが完了しました！", view=None)
@@ -433,7 +433,7 @@ async def process_room_purchase(interaction: discord.Interaction, room_type: str
             else:
                 expire_at = database.get_now_naive() + datetime.timedelta(hours=duration)
                 dur_str = f"{duration}時間"
-                end_str = f"<t:{int(expire_at.timestamp())}:F>"
+                end_str = f"<t:{int(expire_at.replace(tzinfo=config.JST).timestamp())}:F>"
                 
             await database.add_room(channel.id, owner_id, room_type, expire_at)
             await interaction.edit_original_response(content=f"✅ {channel.mention} を作成しました！", view=None)

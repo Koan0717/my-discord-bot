@@ -767,13 +767,20 @@ async def run_roulette_game(interaction: discord.Interaction, user, bet, count, 
         color=0x3498db
     )
     
-    if not interaction.is_expired():
-        try:
-            await interaction.response.edit_message(embed=embed, view=None)
-        except discord.InteractionResponded:
-            await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=None)
+    target_msg = None
+    if interaction.message:
+        if not interaction.is_expired():
+            try:
+                await interaction.response.edit_message(embed=embed, view=None)
+                target_msg = interaction.message
+            except discord.InteractionResponded:
+                target_msg = await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=None)
+        else:
+            target_msg = await interaction.channel.send(embed=embed)
     else:
-        await interaction.channel.send(embed=embed)
+        target_msg = await interaction.followup.send(embed=embed, view=None, ephemeral=True)
+        
+    target_message_id = target_msg.id if target_msg else None
         
     await asyncio.sleep(1.2)
     
@@ -781,7 +788,10 @@ async def run_roulette_game(interaction: discord.Interaction, user, bet, count, 
     embed.description = f"賭け先: **{format_bet_type(bet_type, target_num)}**\n賭け金: **{bet} {config.CURRENCY_NAME}**\n\n" \
                         f"spinning: [ {' ➔ '.join(spin_sequence[2:])} ➔ ??? ]"
     
-    await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed)
+    if target_message_id:
+        await interaction.followup.edit_message(message_id=target_message_id, embed=embed)
+    else:
+        await interaction.channel.send(embed=embed)
     
     await asyncio.sleep(1.2)
     
@@ -806,7 +816,10 @@ async def run_roulette_game(interaction: discord.Interaction, user, bet, count, 
     embed = discord.Embed(title=title, description=desc, color=color)
     embed.set_footer(text=f"本日 {current_count+1}/10回目")
     
-    await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed)
+    if target_message_id:
+        await interaction.followup.edit_message(message_id=target_message_id, embed=embed)
+    else:
+        await interaction.channel.send(embed=embed)
 
 class RouletteView(discord.ui.View):
     def __init__(self):

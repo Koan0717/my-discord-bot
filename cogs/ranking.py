@@ -208,7 +208,7 @@ class Ranking(commands.Cog):
                     print(f"[DEBUG] VC XP Awarding: {member.display_name} in {category_name}")
                     new_lv = await database.add_xp(user_id, xp_reward, "vc")
                     
-                    self.bot.vc_sessions[user_id] = now
+                    self.bot.vc_sessions[user_id] = last_reward_time + datetime.timedelta(minutes=elapsed_minutes)
                     
                     if new_lv:
                         lv_channel = self.bot.get_channel(config.get_setting(self.bot, "LEVEL_UP_CHANNEL_ID"))

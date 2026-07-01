@@ -65,21 +65,33 @@ class Economy(commands.Cog):
                 
         total_amount = amount * len(valid_targets)
         
+        # Check balance before deferring to allow proper ephemeral error response
+        user_balance = await database.get_balance(interaction.user.id)
+        if user_balance < total_amount:
+            await interaction.response.send_message(f"残高が不足しています。（合計 {total_amount} {config.CURRENCY_NAME} 必要です。現在の残高: {user_balance} {config.CURRENCY_NAME}）", ephemeral=True)
+            return
+
         await interaction.response.defer()
         success = await database.remove_balance(interaction.user.id, total_amount)
         if not success:
-            await interaction.followup.send(f"残高が不足しています。（合計 {total_amount} {config.CURRENCY_NAME} 必要です）", ephemeral=True)
+            await interaction.followup.send("送金処理中にエラーが発生しました（残高が不足しているか、処理がキャンセルされました）。", ephemeral=True)
             return
             
         for t in valid_targets:
             await database.add_balance(t.id, amount)
-            await interaction.followup.send(f"{t.mention} に **{amount} {config.CURRENCY_NAME}** を送金しました！")
-            await config.send_economy_log(
-                interaction.guild, 
-                "💸 送金・お渡し", 
-                f"{interaction.user.mention} が {t.mention} に **{amount} {config.CURRENCY_NAME}** を送金しました。",
-                user=interaction.user
-            )
+            
+        # Send a single unified message to avoid spamming/rate limits
+        target_mentions = ", ".join([t.mention for t in valid_targets])
+        await interaction.followup.send(f"{target_mentions} にそれぞれ **{amount} {config.CURRENCY_NAME}** を送金しました！")
+        
+        # Log all recipients in a single entry
+        target_names = ", ".join([f"{t.display_name} (ID: {t.id})" for t in valid_targets])
+        await config.send_economy_log(
+            interaction.guild, 
+            "💸 送金・お渡し", 
+            f"{interaction.user.mention} が {target_mentions} にそれぞれ **{amount} {config.CURRENCY_NAME}** を送金しました。\n宛先: {target_names}\n合計送金額: **{total_amount} {config.CURRENCY_NAME}**",
+            user=interaction.user
+        )
 
 async def setup(bot):
     await bot.add_cog(Economy(bot))
