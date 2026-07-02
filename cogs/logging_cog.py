@@ -395,6 +395,24 @@ class Logging(commands.Cog):
                 embed.timestamp = now
                 await config.send_log(guild, "member_join_leave", embed)
 
+    @commands.Cog.listener(name="on_member_update")
+    async def restrict_nickname_change(self, before, after):
+        if before.nick != after.nick:
+            if after.bot:
+                return
+            if after.guild.owner_id == after.id:
+                return
+            if config.has_admin_role(self.bot, after) or config.has_interviewer_role(self.bot, after):
+                return
+            
+            try:
+                await after.edit(nick=before.nick, reason="管理者と面接官以外は名前の変更が禁止されています")
+                print(f"[Nickname Restrict] Reverted nickname for {after.display_name} (from '{after.nick}' to '{before.nick}')")
+            except discord.Forbidden:
+                pass
+            except discord.HTTPException as e:
+                print(f"[Nickname Restrict] Failed to revert nickname for {after.display_name}: {e}")
+
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
         if before.author.bot:
