@@ -26,8 +26,15 @@ async def trigger_evaluation_failure(guild, target, reason, executor, bot):
         except Exception as e:
             print(f"[Evaluation] Failed to remove minus target roles: {e}")
 
-    # 評価落ちロールを付与
-    role = config.get_role_by_setting(bot, guild, "EVALUATION_FAILED_ROLE_ID", config.EVALUATION_FAILED_ROLE_NAME)
+    is_violator = (reason == "通貨マイナスになったため")
+    role_type_name = "ルール違反者" if is_violator else "評価落ち"
+    
+    # 評価落ち/違反者ロールを付与
+    if is_violator:
+        role = config.get_role_by_setting(bot, guild, "VIOLATOR_ROLE_ID", "ルール違反者")
+    else:
+        role = config.get_role_by_setting(bot, guild, "EVALUATION_FAILED_ROLE_ID", config.EVALUATION_FAILED_ROLE_NAME)
+        
     if role and role not in target.roles:
         try:
             await target.add_roles(role, reason=reason)
@@ -35,16 +42,16 @@ async def trigger_evaluation_failure(guild, target, reason, executor, bot):
             print(f"[Evaluation] Failed to add role: {e}")
             
     # 自分にしか見えないチャット (DM)
-    dm_msg = "審査の結果評価落ちになりました。" if reason != "通貨マイナスになったため" else "通貨がマイナスになった為、評価落ちしました。"
+    dm_msg = "審査の結果評価落ちになりました。" if not is_violator else "通貨がマイナスになった為、ルール違反者になりました。"
     try:
         await target.send(dm_msg)
     except Exception:
         pass
         
-    # 評価落ちログ
+    # ログ出力
     embed = discord.Embed(
-        title="📉 評価落ち",
-        description=f"{target.mention} が評価落ちしました。",
+        title=f"📉 {role_type_name}",
+        description=f"{target.mention} が{role_type_name}になりました。",
         color=discord.Color.red()
     )
     embed.add_field(name="理由", value=reason, inline=False)
@@ -2270,6 +2277,7 @@ class BotSetupMainSelect(discord.ui.Select):
             discord.SelectOption(label="👥 中級・上級評価員", value="EVALUATOR_TIER2_ROLE_IDS", description="中級・上級ランクの評価員ロール"),
             discord.SelectOption(label="👥 特級・統括評価員", value="EVALUATOR_TIER3_ROLE_IDS", description="特級・統括ランクの評価員ロール"),
             discord.SelectOption(label="👥 評価落ちロール", value="EVALUATION_FAILED_ROLE_ID", description="通貨マイナスなどで付与される評価落ちロール"),
+            discord.SelectOption(label="👥 ルール違反者ロール", value="VIOLATOR_ROLE_ID", description="通貨マイナスになった際に付与されるロール"),
             discord.SelectOption(label="👥 新規メンバーロール", value="NEW_MEMBER_ROLE_ID", description="入界後の一般メンバーロール"),
             discord.SelectOption(label="👥 入界待機者ロール", value="PENDING_MEMBER_ROLE_ID", description="面接待ちメンバーのロール"),
             discord.SelectOption(label="👥 面接官ロール", value="INTERVIEWER_ROLE_IDS", description="面接を行える権限ロール"),
@@ -2378,6 +2386,7 @@ class BotSetupMainView(discord.ui.View):
         
         other_roles_text = (
             f"・評価落ちロール: {format_setting_status(guild, 'EVALUATION_FAILED_ROLE_ID', bot)}\n"
+            f"・ルール違反者ロール: {format_setting_status(guild, 'VIOLATOR_ROLE_ID', bot)}\n"
             f"・見習い・初級評価員ロール: {format_setting_status(guild, 'EVALUATOR_TIER1_ROLE_IDS', bot)}\n"
             f"・中級・上級評価員ロール: {format_setting_status(guild, 'EVALUATOR_TIER2_ROLE_IDS', bot)}\n"
             f"・特級・統括評価員ロール: {format_setting_status(guild, 'EVALUATOR_TIER3_ROLE_IDS', bot)}\n"

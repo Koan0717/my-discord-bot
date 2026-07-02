@@ -302,6 +302,34 @@ class Logging(commands.Cog):
                 embed.add_field(name="実行者", value=moderator.mention if moderator else "不明", inline=False)
                 await config.send_log(after.guild, "evaluation_failure", embed)
 
+        # ルール違反者ロール付与検知
+        violator_role = config.get_role_by_setting(self.bot, after.guild, "VIOLATOR_ROLE_ID", "ルール違反者")
+        if violator_role and violator_role in after.roles and violator_role not in before.roles:
+            await asyncio.sleep(1)
+            moderator = None
+            reason = "ルール違反のため"
+            is_manual = True
+            try:
+                async for entry in after.guild.audit_logs(limit=5, action=discord.AuditLogAction.member_role_update):
+                    if entry.target.id == after.id:
+                        if violator_role in entry.after.roles and violator_role not in entry.before.roles:
+                            moderator = entry.user
+                            if entry.reason == "通貨マイナスになったため" or (entry.user and entry.user.bot):
+                                is_manual = False
+                            break
+            except Exception as e:
+                print(f"[Violator Log] Failed to fetch audit log: {e}")
+            
+            if is_manual:
+                embed = discord.Embed(
+                    title="📉 ルール違反者",
+                    description=f"{after.mention} がルール違反者になりました。",
+                    color=discord.Color.red()
+                )
+                embed.add_field(name="理由", value=reason, inline=False)
+                embed.add_field(name="実行者", value=moderator.mention if moderator else "不明", inline=False)
+                await config.send_log(after.guild, "evaluation_failure", embed)
+
         # タイムアウト検知ロジック
         guild = after.guild
         if before.timed_out_until != after.timed_out_until:
