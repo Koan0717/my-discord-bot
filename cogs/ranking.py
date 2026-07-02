@@ -32,6 +32,83 @@ class Ranking(commands.Cog):
             tc_next = database.get_next_level_xp(tc_lv)
             vc_next = database.get_next_level_xp(vc_lv)
 
+            # アバターとロゴのバイナリ取得
+            avatar_bytes = None
+            try:
+                avatar_bytes = await target_user.display_avatar.read()
+            except Exception as e:
+                print(f"[Ranking Cog] Failed to read avatar for {target_user.display_name}: {e}")
+                
+            server_logo_bytes = None
+            if interaction.guild and interaction.guild.icon:
+                try:
+                    server_logo_bytes = await interaction.guild.icon.read()
+                except Exception as e:
+                    print(f"[Ranking Cog] Failed to read guild icon: {e}")
+
+            # ロール名の取得
+            user_role_ids = {r.id for r in target_user.roles}
+            
+            vc_role_name = None
+            vc_rewards = await database.get_level_role_rewards("vc")
+            vc_rewards.sort(key=lambda x: x["level"], reverse=True)
+            for r in vc_rewards:
+                if r["role_id"] in user_role_ids:
+                    role = target_user.guild.get_role(r["role_id"])
+                    if role:
+                        vc_role_name = role.name
+                        break
+            
+            tc_role_name = None
+            tc_rewards = await database.get_level_role_rewards("tc")
+            tc_rewards.sort(key=lambda x: x["level"], reverse=True)
+            for r in tc_rewards:
+                if r["role_id"] in user_role_ids:
+                    role = target_user.guild.get_role(r["role_id"])
+                    if role:
+                        tc_role_name = role.name
+                        break
+
+            # 評価時間の取得と計算
+            eval_time_sec = user_data.get("evaluation_vc_time", 0)
+            join_time = self.bot.eval_vc_sessions.get(target_user.id)
+            if join_time:
+                now_aware = datetime.datetime.now(config.JST)
+                current_sec = int((now_aware - join_time).total_seconds())
+                if current_sec > 0:
+                    eval_time_sec += current_sec
+
+            hours = eval_time_sec // 3600
+            minutes = (eval_time_sec % 3600) // 60
+            seconds = eval_time_sec % 60
+            eval_time_str = f"{hours}時間{minutes}分{seconds}秒"
+
+            # ランクカード画像の生成
+            import io
+            from card_generator import generate_rank_card
+            try:
+                card_bytes = await generate_rank_card(
+                    user_name=target_user.display_name,
+                    avatar_bytes=avatar_bytes,
+                    server_logo_bytes=server_logo_bytes,
+                    vc_level=vc_lv,
+                    vc_xp=vc_xp,
+                    vc_next_xp=vc_next,
+                    vc_role_name=vc_role_name,
+                    tc_level=tc_lv,
+                    tc_xp=tc_xp,
+                    tc_next_xp=tc_next,
+                    tc_role_name=tc_role_name,
+                    enable_tc=True,
+                    eval_time_str=eval_time_str
+                )
+                file = discord.File(fp=io.BytesIO(card_bytes), filename="rank_card.png")
+                await interaction.followup.send(file=file)
+                return
+            except Exception as e:
+                print(f"[Ranking Cog] Image generation error, falling back to text embed: {e}")
+
+            # --- フォールバック: 画像生成が失敗した場合はテキストベースのEmbedを送信 ---
             def create_progress_bar(current, total, length=12):
                 if total <= 0: total = 100
                 pct = min(current / total, 1.0)
@@ -69,13 +146,13 @@ class Ranking(commands.Cog):
             if target_user.voice and target_user.voice.channel:
                 vc = target_user.voice.channel
                 cat = vc.category
-                join_time = self.bot.vc_sessions.get(target_user.id)
-                if join_time:
+                join_time_vc = self.bot.vc_sessions.get(target_user.id)
+                if join_time_vc:
                     now_aware = datetime.datetime.now(config.JST)
-                    delta_sec = (now_aware - join_time).total_seconds()
-                    hours = int(delta_sec // 3600)
-                    mins = int((delta_sec % 3600) // 60)
-                    dur_str = f"{hours}時間{mins}分" if hours > 0 else f"{mins}分"
+                    delta_sec = (now_aware - join_time_vc).total_seconds()
+                    hours_vc = int(delta_sec // 3600)
+                    mins_vc = int((delta_sec % 3600) // 60)
+                    dur_str = f"{hours_vc}時間{mins_vc}分" if hours_vc > 0 else f"{mins_vc}分"
                 else:
                     dur_str = "0分"
 
@@ -106,20 +183,12 @@ class Ranking(commands.Cog):
             embed.add_field(name="🎙️ ボイス活動 (VC)", value=vc_value, inline=False)
 
             # 評価時間
-            eval_time_sec = user_data.get("evaluation_vc_time", 0)
-            join_time = self.bot.eval_vc_sessions.get(target_user.id)
-            if join_time:
-                now_aware = datetime.datetime.now(config.JST)
-                current_sec = int((now_aware - join_time).total_seconds())
-                if current_sec > 0:
-                    eval_time_sec += current_sec
-
             def format_duration(seconds: int) -> str:
-                hours = seconds // 3600
-                minutes = (seconds % 3600) // 60
-                if hours > 0:
-                    return f"{hours}時間{minutes}分"
-                return f"{minutes}分"
+                hours_d = seconds // 3600
+                minutes_d = (seconds % 3600) // 60
+                if hours_d > 0:
+                    return f"{hours_d}時間{minutes_d}分"
+                return f"{minutes_d}分"
 
             embed.add_field(
                 name="⏱️ 評価浮上時間",
@@ -131,6 +200,12 @@ class Ranking(commands.Cog):
             embed.timestamp = datetime.datetime.now(config.JST)
 
             await interaction.followup.send(embed=embed)
+        except Exception as e:
+            print(f"[ERROR] rank status command: {e}")
+            try:
+                await interaction.followup.send(f"❌ エラーが発生しました: `{e}`", ephemeral=True)
+            except:
+                pass
         except Exception as e:
             print(f"[ERROR] rank status command: {e}")
             try:
