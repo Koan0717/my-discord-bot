@@ -1,7 +1,70 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import database
 import config
+
+class ShopItemDurationModal(discord.ui.Modal, title="有効期限の設定"):
+    duration = discord.ui.TextInput(
+        label="有効期限 (日数)", 
+        placeholder="日数を半角数字で入力してください (空欄または0で期限なし)", 
+        required=False
+    )
+
+    def __init__(self, bot, guild_id, item_id, target_role_ids, reward_role_ids, setup_view):
+        super().__init__()
+        self.bot = bot
+        self.guild_id = guild_id
+        self.item_id = item_id
+        self.target_role_ids = target_role_ids
+        self.reward_role_ids = reward_role_ids
+        self.setup_view = setup_view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            duration_val = None
+            if self.duration.value.strip():
+                duration_val = int(self.duration.value.strip())
+                if duration_val < 0:
+                    return await interaction.response.send_message("日数は0以上である必要があります。", ephemeral=True)
+                if duration_val == 0:
+                    duration_val = None
+            
+            await interaction.response.defer(ephemeral=True)
+            item = await database.get_shop_item(self.item_id)
+            if item:
+                await database.update_shop_item(
+                    self.item_id, 
+                    item["name"], 
+                    item["usage"], 
+                    item["price"], 
+                    self.target_role_ids, 
+                    self.reward_role_ids,
+                    duration_val
+                )
+                
+                duration_str = f"{duration_val}日" if duration_val else "制限なし (永続)"
+                await interaction.followup.send(f"「{item['name']}」のロール・有効期限設定を保存しました。", ephemeral=True)
+                
+                # ロール設定更新ログの送信
+                target_mentions = [interaction.guild.get_role(r).mention for r in self.target_role_ids if interaction.guild.get_role(r)]
+                reward_mentions = [interaction.guild.get_role(r).mention for r in self.reward_role_ids if interaction.guild.get_role(r)]
+                target_str = "、".join(target_mentions) if target_mentions else "制限なし (誰でも)"
+                reward_str = "、".join(reward_mentions) if reward_mentions else "なし"
+                
+                embed = discord.Embed(title="🛒 商品ロール・有効期限設定更新", color=discord.Color.orange())
+                embed.add_field(name="実行者", value=f"{interaction.user.mention} (ID: {interaction.user.id})", inline=False)
+                embed.add_field(name="商品ID", value=str(self.item_id), inline=True)
+                embed.add_field(name="商品名", value=item["name"], inline=True)
+                embed.add_field(name="対象ロール", value=target_str, inline=True)
+                embed.add_field(name="購入品ロール", value=reward_str, inline=True)
+                embed.add_field(name="有効期限", value=duration_str, inline=True)
+                await config.send_log(interaction.guild, "shop", embed)
+                
+                self.setup_view.stop()
+            else:
+                await interaction.followup.send("商品の取得に失敗しました。", ephemeral=True)
+        except ValueError:
+            await interaction.response.send_message("有効期限は数値で入力してください。", ephemeral=True)
 
 class ShopItemRoleSetupView(discord.ui.View):
     def __init__(self, bot, guild_id: int, item_id: int):
@@ -47,29 +110,17 @@ class ShopItemRoleSetupView(discord.ui.View):
         await interaction.response.defer()
 
     async def save_callback(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        item = await database.get_shop_item(self.item_id)
-        if item:
-            await database.update_shop_item(self.item_id, item["name"], item["usage"], item["price"], self.target_role_ids, self.reward_role_ids)
-            await interaction.followup.send(f"「{item['name']}」のロール設定を保存しました。", ephemeral=True)
-            
-            # ロール設定更新ログの送信
-            target_mentions = [interaction.guild.get_role(r).mention for r in self.target_role_ids if interaction.guild.get_role(r)]
-            reward_mentions = [interaction.guild.get_role(r).mention for r in self.reward_role_ids if interaction.guild.get_role(r)]
-            target_str = "、".join(target_mentions) if target_mentions else "制限なし (誰でも)"
-            reward_str = "、".join(reward_mentions) if reward_mentions else "なし"
-            
-            embed = discord.Embed(title="🛒 商品ロール設定更新", color=discord.Color.orange())
-            embed.add_field(name="実行者", value=f"{interaction.user.mention} (ID: {interaction.user.id})", inline=False)
-            embed.add_field(name="商品ID", value=str(self.item_id), inline=True)
-            embed.add_field(name="商品名", value=item["name"], inline=True)
-            embed.add_field(name="対象ロール", value=target_str, inline=True)
-            embed.add_field(name="購入品ロール", value=reward_str, inline=True)
-            await config.send_log(interaction.guild, "shop", embed)
-            
-            self.stop()
-        else:
-            await interaction.followup.send("商品の取得に失敗しました。", ephemeral=True)
+        # モーダルを送信する。レスポンスはモーダルが処理するため、defer は呼ばない
+        await interaction.response.send_modal(
+            ShopItemDurationModal(
+                self.bot, 
+                self.guild_id, 
+                self.item_id, 
+                self.target_role_ids, 
+                self.reward_role_ids, 
+                self
+            )
+        )
 
 class ShopItemAddModal(discord.ui.Modal, title="商品の追加"):
     name = discord.ui.TextInput(label="商品名", placeholder="商品名を入力してください", required=True)
@@ -203,9 +254,16 @@ class ShopItemSelect(discord.ui.Select):
                 if user_balance < item["price"]:
                     return await interaction.followup.send("所持金が足りません。", ephemeral=True)
                 
+                # 有効期限の計算
+                import datetime as dt
+                duration_days = item.get("duration_days")
+                expire_at = None
+                if duration_days and duration_days > 0:
+                    expire_at = database.get_now_naive() + dt.timedelta(days=duration_days)
+
                 # 引き落としとアイテム付与履歴
                 await database.add_balance(interaction.user.id, -item["price"])
-                await database.add_user_item(interaction.user.id, item["item_id"])
+                await database.add_user_item(interaction.user.id, item["item_id"], expire_at)
                 
                 # ロール付与
                 reward_role_ids = item.get("reward_role_ids") or []
@@ -224,6 +282,8 @@ class ShopItemSelect(discord.ui.Select):
                     
                     if succeeded_roles:
                         added_role_msg += f"\n特典ロール「{'、'.join(succeeded_roles)}」が付与されました！"
+                        if duration_days:
+                            added_role_msg += f" (有効期限: {duration_days}日間)"
                     if failed_roles:
                         added_role_msg += f"\n特典ロール「{'、'.join(failed_roles)}」の付与に失敗しました（Botの権限が不足しています）。"
                 
@@ -237,9 +297,12 @@ class ShopItemSelect(discord.ui.Select):
                 embed.add_field(name="支払額", value=f"{item['price']:,} {config.CURRENCY_NAME}", inline=True)
                 if succeeded_roles:
                     embed.add_field(name="付与ロール", value="、".join(succeeded_roles), inline=False)
+                    if duration_days:
+                        embed.add_field(name="有効期限", value=f"{duration_days}日間", inline=True)
                 if failed_roles:
                     embed.add_field(name="付与失敗ロール (権限不足等)", value="、".join(failed_roles), inline=False)
                 await config.send_log(interaction.guild, "shop", embed)
+
 
 class ShopItemSelectView(discord.ui.View):
     def __init__(self, items, action):
@@ -394,6 +457,10 @@ class ShopPanelView(discord.ui.View):
                 reward_roles = [interaction.guild.get_role(rid).mention for rid in reward_role_ids if interaction.guild.get_role(rid)]
                 if reward_roles:
                     reward_text = "、".join(reward_roles)
+            
+            duration_days = item.get("duration_days")
+            if reward_role_ids and duration_days and duration_days > 0:
+                reward_text += f" (有効期限: {duration_days}日間)"
                 
             embed.add_field(name=f"🛒 {item['name']} (価格: {item['price']:,} {config.CURRENCY_NAME})", value=f"**用途:** {item['usage']}\n**対象:** {target_text}\n**購入品:** {reward_text}", inline=False)
         
@@ -427,6 +494,58 @@ class ShopPanelView(discord.ui.View):
 class ShopCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.check_expired_roles.start()
+
+    def cog_unload(self):
+        self.check_expired_roles.cancel()
+
+    @tasks.loop(minutes=1)
+    async def check_expired_roles(self):
+        try:
+            expired_items = await database.get_expired_user_items()
+            for item in expired_items:
+                guild = self.bot.get_guild(item["guild_id"])
+                if not guild:
+                    try:
+                        guild = await self.bot.fetch_guild(item["guild_id"])
+                    except Exception:
+                        pass
+                
+                if guild:
+                    member = guild.get_member(item["user_id"])
+                    if not member:
+                        try:
+                            member = await guild.fetch_member(item["user_id"])
+                        except Exception:
+                            pass
+                    
+                    if member:
+                        removed_roles = []
+                        for role_id in (item["reward_role_ids"] or []):
+                            role = guild.get_role(role_id)
+                            if role:
+                                try:
+                                    await member.remove_roles(role, reason="購入品ロールの期限切れによる剥奪")
+                                    removed_roles.append(role.name)
+                                except discord.Forbidden:
+                                    print(f"[Shop] Failed to remove role {role.name} from {member.display_name} due to permissions.")
+                                except Exception as e:
+                                    print(f"[Shop] Error removing role {role.name} from {member.display_name}: {e}")
+                        
+                        # ログの送信
+                        if removed_roles:
+                            embed = discord.Embed(title="⏰ 特典ロール期限切れ剥奪", color=discord.Color.red())
+                            embed.add_field(name="対象者", value=f"{member.mention} (ID: {member.id})", inline=False)
+                            embed.add_field(name="剥奪されたロール", value="、".join(removed_roles), inline=False)
+                            await config.send_log(guild, "shop", embed)
+                            
+                await database.mark_user_item_role_removed(item["id"])
+        except Exception as e:
+            print(f"[Shop] Error in check_expired_roles loop: {e}")
+
+    @check_expired_roles.before_loop
+    async def before_check_expired_roles(self):
+        await self.bot.wait_until_ready()
 
     @commands.command(name="shop_panel")
     @commands.has_permissions(administrator=True)
