@@ -2531,6 +2531,7 @@ class BotSetupRoleSelect(discord.ui.RoleSelect):
         self.is_multi = is_multi
 
     async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
         view = self.view
         guild = interaction.guild
         if self.is_multi:
@@ -2547,7 +2548,7 @@ class BotSetupRoleSelect(discord.ui.RoleSelect):
             color=discord.Color.green()
         )
         back_view = BotSetupConfigureView(view.user, self.key)
-        await interaction.response.edit_message(embed=embed, view=back_view)
+        await interaction.edit_original_response(embed=embed, view=back_view)
 
 class BotSetupChannelSelect(discord.ui.ChannelSelect):
     def __init__(self, key, is_multi, channel_types):
@@ -2562,6 +2563,7 @@ class BotSetupChannelSelect(discord.ui.ChannelSelect):
         self.is_multi = is_multi
 
     async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
         view = self.view
         guild = interaction.guild
         if self.is_multi:
@@ -2582,7 +2584,7 @@ class BotSetupChannelSelect(discord.ui.ChannelSelect):
             color=discord.Color.green()
         )
         back_view = BotSetupConfigureView(view.user, self.key)
-        await interaction.response.edit_message(embed=embed, view=back_view)
+        await interaction.edit_original_response(embed=embed, view=back_view)
 
 class BotSetupConfigureView(discord.ui.View):
     def __init__(self, user, key):
