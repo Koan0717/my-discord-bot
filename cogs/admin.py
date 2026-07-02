@@ -529,11 +529,11 @@ class DowngradeGroup(app_commands.Group):
         super().__init__(name="評価落ち", description="評価落ちに関するコマンド")
         self.bot = bot
 
-    @app_commands.command(name="実行", description="【運営専用】指定したユーザーを評価落ちさせます")
+    @app_commands.command(name="実行", description="【運営・評価員統括専用】指定したユーザーを評価落ちさせます")
     @app_commands.describe(target="対象メンバー", reason="評価落ちの理由")
     async def downgrade_execute(self, interaction: discord.Interaction, target: discord.Member, reason: str):
-        if not config.has_admin_role(self.bot, interaction.user) and not interaction.user.guild_permissions.administrator:
-            return await interaction.response.send_message("このコマンドを実行する権限がありません（運営専用）。", ephemeral=True)
+        if config.get_evaluator_tier(self.bot, interaction.user) < 3:
+            return await interaction.response.send_message("このコマンドを実行する権限がありません（運営・評価員統括専用）。", ephemeral=True)
             
         await interaction.response.defer(ephemeral=True)
         await trigger_evaluation_failure(interaction.guild, target, reason, interaction.user, self.bot)
