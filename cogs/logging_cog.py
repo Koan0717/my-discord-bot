@@ -75,84 +75,88 @@ class Logging(commands.Cog):
                 # 免除ロールチェック
                 exempt_roles = cfg.get("exempt_roles", set())
                 author_role_ids = {role.id for role in message.author.roles}
-                if exempt_roles & author_role_ids:
-                    return
                 
                 # 対象カテゴリー/チャンネルチェック
                 target_categories = cfg.get("categories", set())
                 target_channels = cfg.get("channels", set())
-                if target_categories or target_channels:
+                
+                is_grief_monitored = True
+                if exempt_roles & author_role_ids:
+                    is_grief_monitored = False
+                elif target_categories or target_channels:
                     in_target_channel = message.channel.id in target_channels
                     in_target_category = message.channel.category and message.channel.category.id in target_categories
                     if not in_target_channel and not in_target_category:
-                        return
-            user_tracker = self.bot.spam_tracker.setdefault(user_id, {
-                "last_content": None,
-                "content_count": 0,
-                "everyone_url_count": 0,
-                "mention_count": 0,
-                "last_time": now
-            })
+                        is_grief_monitored = False
+                
+                if is_grief_monitored:
+                    user_tracker = self.bot.spam_tracker.setdefault(user_id, {
+                        "last_content": None,
+                        "content_count": 0,
+                        "everyone_url_count": 0,
+                        "mention_count": 0,
+                        "last_time": now
+                    })
 
-            # 3秒以上経過していればリセット
-            if (now - user_tracker["last_time"]).total_seconds() > 3:
-                user_tracker["content_count"] = 0
-                user_tracker["everyone_url_count"] = 0
-                user_tracker["mention_count"] = 0
+                    # 3秒以上経過していればリセット
+                    if (now - user_tracker["last_time"]).total_seconds() > 3:
+                        user_tracker["content_count"] = 0
+                        user_tracker["everyone_url_count"] = 0
+                        user_tracker["mention_count"] = 0
 
-            user_tracker["last_time"] = now
-            timeout_reason = None
+                    user_tracker["last_time"] = now
+                    timeout_reason = None
 
-            # 同じメッセージの連続検知 (内容が存在する場合)
-            if message.content and message.content == user_tracker["last_content"]:
-                user_tracker["content_count"] += 1
-                if user_tracker["content_count"] >= 3:
-                    timeout_reason = "連続で同じメッセージを送信したため"
-            else:
-                user_tracker["last_content"] = message.content
-                user_tracker["content_count"] = 1
+                    # 同じメッセージの連続検知 (内容が存在する場合)
+                    if message.content and message.content == user_tracker["last_content"]:
+                        user_tracker["content_count"] += 1
+                        if user_tracker["content_count"] >= 3:
+                            timeout_reason = "連続で同じメッセージを送信したため"
+                    else:
+                        user_tracker["last_content"] = message.content
+                        user_tracker["content_count"] = 1
 
-            # @everyone / @here メンション、またはDiscord招待URL送信の検知 (3秒以内累計5回以上)
-            import re
-            DISCORD_INVITE_PATTERN = re.compile(
-                r'(?:https?://)?(?:www\.)?(?:discord\.gg|discord\.com/invite|discordapp\.com/invite)/[a-zA-Z0-9-]+',
-                re.IGNORECASE
-            )
-            
-            if message.mention_everyone or DISCORD_INVITE_PATTERN.search(message.content):
-                user_tracker["everyone_url_count"] += 1
-                if user_tracker["everyone_url_count"] >= 5:
-                    timeout_reason = "短時間にDiscord招待リンクまたは@everyoneメンションを複数回送信したため"
-
-            # メンションスパムの検知 (ユーザーメンション + 役職メンション)
-            msg_mentions = len(message.mentions) + len(message.role_mentions)
-            if msg_mentions >= 5:
-                timeout_reason = "1つのメッセージで大量のメンションを送信したため"
-            elif msg_mentions > 0:
-                user_tracker["mention_count"] += msg_mentions
-                if user_tracker["mention_count"] >= 10:
-                    timeout_reason = "短時間に連続してメンションを送信したため"
-
-            if timeout_reason:
-                try:
-                    # トリガーとなったメッセージの自動削除を試みる
-                    try:
-                        await message.delete()
-                    except discord.Forbidden:
-                        print(f"[WARNING] Cannot delete message. Missing permissions.")
-                    except Exception as de:
-                        print(f"[ERROR] Message deletion failed: {de}")
-
-                    timeout_duration = datetime.timedelta(hours=1)
-                    await message.author.timeout(timeout_duration, reason=timeout_reason)
-                    await message.channel.send(f"🚨 {message.author.mention} がスパム行為（{timeout_reason}）によりタイムアウトされました。")
+                    # @everyone / @here メンション、またはDiscord招待URL送信の検知 (3秒以内累計5回以上)
+                    import re
+                    DISCORD_INVITE_PATTERN = re.compile(
+                        r'(?:https?://)?(?:www\.)?(?:discord\.gg|discord\.com/invite|discordapp\.com/invite)/[a-zA-Z0-9-]+',
+                        re.IGNORECASE
+                    )
                     
-                    user_tracker["content_count"] = 0
-                    user_tracker["everyone_url_count"] = 0
-                    user_tracker["mention_count"] = 0
-                    return # スパムなら処理終了
-                except Exception as e:
-                    print(f"[ERROR] Timeout failed for {message.author.display_name}: {e}")
+                    if message.mention_everyone or DISCORD_INVITE_PATTERN.search(message.content):
+                        user_tracker["everyone_url_count"] += 1
+                        if user_tracker["everyone_url_count"] >= 5:
+                            timeout_reason = "短時間にDiscord招待リンクまたは@everyoneメンションを複数回送信したため"
+
+                    # メンションスパムの検知 (ユーザーメンション + 役職メンション)
+                    msg_mentions = len(message.mentions) + len(message.role_mentions)
+                    if msg_mentions >= 5:
+                        timeout_reason = "1つのメッセージで大量のメンションを送信したため"
+                    elif msg_mentions > 0:
+                        user_tracker["mention_count"] += msg_mentions
+                        if user_tracker["mention_count"] >= 10:
+                            timeout_reason = "短時間に連続してメンションを送信したため"
+
+                    if timeout_reason:
+                        try:
+                            # トリガーとなったメッセージの自動削除を試みる
+                            try:
+                                await message.delete()
+                            except discord.Forbidden:
+                                print(f"[WARNING] Cannot delete message. Missing permissions.")
+                            except Exception as de:
+                                print(f"[ERROR] Message deletion failed: {de}")
+
+                            timeout_duration = datetime.timedelta(hours=1)
+                            await message.author.timeout(timeout_duration, reason=timeout_reason)
+                            await message.channel.send(f"🚨 {message.author.mention} がスパム行為（{timeout_reason}）によりタイムアウトされました。")
+                            
+                            user_tracker["content_count"] = 0
+                            user_tracker["everyone_url_count"] = 0
+                            user_tracker["mention_count"] = 0
+                            return # スパムなら処理終了
+                        except Exception as e:
+                            print(f"[ERROR] Timeout failed for {message.author.display_name}: {e}")
 
         # 3. 自己紹介チャンネルでの発言検知（スレッド自動作成）
         guild = message.guild
@@ -164,36 +168,32 @@ class Logging(commands.Cog):
                     for forum_id in cfg["forum_channel_ids"]:
                         forum_channel = self.bot.get_channel(forum_id)
                         if isinstance(forum_channel, discord.ForumChannel):
-                            # 重複チェック: アクティブなスレッド名にユーザー名（アカウント名）が含まれているか
-                            duplicate = any(message.author.name in thread.name for thread in forum_channel.threads)
-                            
-                            if not duplicate:
-                                period = await database.get_evaluation_period(user_id)
-                                if period:
-                                    start_str = config.format_evaluation_datetime(period['start_time'])
-                                    end_str = config.format_evaluation_datetime(period['end_time'])
-                                    content_thread = (
-                                        f"**対象者:** {message.author.mention}\n"
-                                        f"**評価期間:** {start_str} ～ {end_str}\n\n"
-                                        f"**自己紹介へのリンク:**\n{message.jump_url}"
-                                    )
-                                else:
-                                    content_thread = (
-                                        f"**対象者:** {message.author.mention}\n"
-                                        f"**評価期間:** データが見つかりませんでした。\n\n"
-                                        f"**自己紹介へのリンク:**\n{message.jump_url}"
-                                    )
-                                    
-                                thread_name = f"{message.author.display_name}_{message.author.name}"
-                                try:
-                                    await forum_channel.create_thread(
-                                        name=thread_name,
-                                        content=content_thread,
-                                        reason=f"Auto created evaluation thread for {message.author.display_name}"
-                                    )
-                                    print(f"[Evaluation Thread] Created for {message.author.display_name} in forum {forum_id}")
-                                except Exception as e:
-                                    print(f"[ERROR] Failed to create forum thread in forum {forum_id}: {e}")
+                            period = await database.get_evaluation_period(user_id)
+                            if period:
+                                start_str = config.format_evaluation_datetime(period['start_time'])
+                                end_str = config.format_evaluation_datetime(period['end_time'])
+                                content_thread = (
+                                    f"**対象者:** {message.author.mention}\n"
+                                    f"**評価期間:** {start_str} ～ {end_str}\n\n"
+                                    f"**自己紹介へのリンク:**\n{message.jump_url}"
+                                )
+                            else:
+                                content_thread = (
+                                    f"**対象者:** {message.author.mention}\n"
+                                    f"**評価期間:** データが見つかりませんでした。\n\n"
+                                    f"**自己紹介へのリンク:**\n{message.jump_url}"
+                                )
+                                
+                            thread_name = f"{message.author.display_name}_{message.author.name}"
+                            try:
+                                await forum_channel.create_thread(
+                                    name=thread_name,
+                                    content=content_thread,
+                                    reason=f"Auto created evaluation thread for {message.author.display_name}"
+                                )
+                                print(f"[Evaluation Thread] Created for {message.author.display_name} in forum {forum_id}")
+                            except Exception as e:
+                                print(f"[ERROR] Failed to create forum thread in forum {forum_id}: {e}")
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
